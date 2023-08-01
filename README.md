@@ -1,3 +1,5 @@
+<img src="./voicebox.png" width="400px"></img>
+
 ## Voicebox - Pytorch (wip)
 
 Implementation of <a href="https://arxiv.org/abs/2306.15687">Voicebox</a> in Pytorch. <a href="https://about.fb.com/news/2023/06/introducing-voicebox-ai-for-speech-generation/">Press release</a>
