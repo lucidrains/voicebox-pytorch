@@ -1,1 +1,6 @@
-from voicebox_pytorch.voicebox_pytorch import VoiceBox
+from voicebox_pytorch.voicebox_pytorch import (
+    Transformer,
+    VoiceBox,
+    DurationPredictor,
+    CNFWrapper
+)
