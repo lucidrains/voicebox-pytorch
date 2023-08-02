@@ -18,6 +18,33 @@ def default(val, d):
 def divisible_by(num, den):
     return (num % den) == 0
 
+# convolutional positional generating module
+
+def DepthWiseConv1d(
+    dim,
+    kernel_size
+):
+    assert not divisible_by(kernel_size, 2)
+    return nn.Conv1d(dim, dim, kernel_size, groups = dim, padding = kernel_size // 2)
+
+class ConvPositionEmbed(Module):
+    def __init__(
+        self,
+        dim,
+        *,
+        kernel_size
+    ):
+        super().__init__()
+        self.dw_conv1d = nn.Sequential(
+            DepthWiseConv1d(dim, kernel_size),
+            nn.GELU()
+        )
+
+    def forward(self, x):
+        x = rearrange(x, 'b n c -> b c n')
+        x = self.dw_conv1d(x)
+        return rearrange(x, 'b c n -> b n c')
+
 # norms
 
 class RMSNorm(Module):
@@ -130,9 +157,15 @@ class DurationPredictor(Module):
         depth = 10,
         dim_head = 64,
         heads = 8,
-        ff_mult = 4
+        ff_mult = 4,
+        conv_pos_embed_kernel_size = 31
     ):
         super().__init__()
+        self.conv_embed = ConvPositionEmbed(
+            dim = dim,
+            kernel_size = conv_pos_embed_kernel_size
+        )
+
         self.transformer = Transformer(
             dim = dim,
             depth = depth,
@@ -142,7 +175,9 @@ class DurationPredictor(Module):
         )
 
     def forward(self, x):
-        return self.transformer(x)
+        x = self.conv_embed(x) + x
+        x = self.transformer(x)
+        return x
 
 class VoiceBox(Module):
     def __init__(
@@ -152,9 +187,15 @@ class VoiceBox(Module):
         depth = 24,
         dim_head = 64,
         heads = 16,
-        ff_mult = 4
+        ff_mult = 4,
+        conv_pos_embed_kernel_size = 31
     ):
         super().__init__()
+        self.conv_embed = ConvPositionEmbed(
+            dim = dim,
+            kernel_size = conv_pos_embed_kernel_size
+        )
+
         self.transformer = Transformer(
             dim = dim,
             depth = depth,
@@ -164,7 +205,9 @@ class VoiceBox(Module):
         )
 
     def forward(self, x):
-        return self.transformer(x)
+        x = self.conv_embed(x) + x
+        x = self.transformer(x)
+        return x
 
 # wrapper for the CNF
 
