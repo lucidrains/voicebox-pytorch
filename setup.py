@@ -18,6 +18,7 @@ setup(
   install_requires=[
     'einops>=0.6.1',
     'torch>=1.6',
+    'torchdiffeq'
   ],
   classifiers=[
     'Development Status :: 4 - Beta',
