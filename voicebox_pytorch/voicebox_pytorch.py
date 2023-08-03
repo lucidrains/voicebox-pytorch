@@ -187,8 +187,10 @@ class Transformer(Module):
 class DurationPredictor(Module):
     def __init__(
         self,
-        dim = 512,
         *,
+        num_phoneme_tokens,
+        dim_phoneme_emb = 512,
+        dim = 512,
         depth = 10,
         dim_head = 64,
         heads = 8,
@@ -197,6 +199,9 @@ class DurationPredictor(Module):
         attn_flash = False
     ):
         super().__init__()
+        self.to_phoneme_emb = nn.Embedding(num_phoneme_tokens, dim_phoneme_emb)
+        self.to_embed = nn.Linear(dim * 2 + dim_phoneme_emb, dim)
+
         self.conv_embed = ConvPositionEmbed(
             dim = dim,
             kernel_size = conv_pos_embed_kernel_size
@@ -211,16 +216,49 @@ class DurationPredictor(Module):
             attn_flash = attn_flash
         )
 
-    def forward(self, x):
+    def forward(
+        self,
+        x,
+        *,
+        phoneme_ids,
+        cond,
+        target = None,
+        mask = None
+    ):
+        phoneme_emb = self.to_phoneme_emb(phoneme_ids)
+        assert cond.shape[-1] == x.shape[-1]
+
+        embed = torch.cat((x, phoneme_emb, cond), dim = -1)
+        x = self.to_embed(embed)
+
         x = self.conv_embed(x) + x
         x = self.transformer(x)
-        return x
+
+        if not exists(mask):
+            return F.l1_loss(x, target)
+
+        loss = F.l1_loss(x, target, reduction = 'none')
+
+        if exists(mask):
+            loss = reduce(loss, 'b n d -> b n', 'mean')
+            loss = loss.masked_fill(mask, 0.)
+
+            # masked mean
+
+            num = reduce(loss, 'b n -> b', 'sum')
+            den = mask.sum(dim = -1).clamp(min = 1e-5)
+            loss = num / den
+
+        return loss.mean()
+
 
 class VoiceBox(Module):
     def __init__(
         self,
-        dim = 1024,
         *,
+        num_phoneme_tokens,
+        dim_phoneme_emb = 1024,
+        dim = 1024,
         depth = 24,
         dim_head = 64,
         heads = 16,
@@ -229,6 +267,9 @@ class VoiceBox(Module):
         attn_flash = False
     ):
         super().__init__()
+        self.to_phoneme_emb = nn.Embedding(num_phoneme_tokens, dim_phoneme_emb)
+        self.to_embed = nn.Linear(dim * 2 + dim_phoneme_emb, dim)
+
         self.conv_embed = ConvPositionEmbed(
             dim = dim,
             kernel_size = conv_pos_embed_kernel_size
@@ -243,10 +284,43 @@ class VoiceBox(Module):
             attn_flash = attn_flash
         )
 
-    def forward(self, x):
+    def forward(
+        self,
+        x,
+        *,
+        phoneme_ids,
+        cond,
+        target = None,
+        mask = None
+    ):
+        phoneme_emb = self.to_phoneme_emb(phoneme_ids)
+        assert cond.shape[-1] == x.shape[-1]
+
+        embed = torch.cat((x, phoneme_emb, cond), dim = -1)
+        x = self.to_embed(embed)
+
         x = self.conv_embed(x) + x
         x = self.transformer(x)
-        return x
+
+        if not exists(target):
+            return x
+
+        if not exists(mask):
+            return F.mse_loss(x, target)
+
+        loss = F.mse_loss(x, target, reduction = 'none')
+
+        if exists(mask):
+            loss = reduce(loss, 'b n d -> b n', 'mean')
+            loss = loss.masked_fill(mask, 0.)
+
+            # masked mean
+
+            num = reduce(loss, 'b n -> b', 'sum')
+            den = mask.sum(dim = -1).clamp(min = 1e-5)
+            loss = num / den
+
+        return loss.mean()
 
 # wrapper for the CNF
 
