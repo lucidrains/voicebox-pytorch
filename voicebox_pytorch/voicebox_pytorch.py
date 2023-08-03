@@ -7,6 +7,8 @@ from beartype import beartype
 
 from einops import rearrange, repeat, reduce
 
+from voicebox_pytorch.attend import Attend
+
 # helper functions
 
 def exists(val):
@@ -63,18 +65,21 @@ class Attention(Module):
         self,
         dim,
         dim_head = 64,
-        heads = 8
+        heads = 8,
+        flash = False
     ):
         super().__init__()
         self.heads = heads
         self.scale = dim_head ** -0.5
         dim_inner = dim_head * heads
 
+        self.attend = Attend(flash = flash)
+
         self.norm = RMSNorm(dim)
         self.to_qkv = nn.Linear(dim, dim_inner * 3, bias = False)
         self.to_out = nn.Linear(dim_inner, dim, bias = False)
 
-    def forward(self, x):
+    def forward(self, x, mask = None):
         h = self.heads
 
         x = self.norm(x)
@@ -82,12 +87,8 @@ class Attention(Module):
         q, k, v = self.to_qkv(x).chunk(3, dim = -1)
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = h), (q, k, v))
 
-        q = q * self.scale
-        sim = einsum('b h i d, b h j d -> b h i j', q, k)
+        out = self.attend(q, k, v, mask = mask)
 
-        attn = sim.softmax(dim = -1)
-
-        out = einsum('b h i j, b h j d -> b h i d', attn, v)
         out = rearrange(out, 'b h n d -> b n (h d)')
         return self.to_out(out)
 
@@ -111,7 +112,8 @@ class Transformer(Module):
         depth,
         dim_head = 64,
         heads = 8,
-        ff_mult = 4
+        ff_mult = 4,
+        attn_flash = False
     ):
         super().__init__()
         assert divisible_by(depth, 2)
@@ -124,7 +126,7 @@ class Transformer(Module):
 
             self.layers.append(nn.ModuleList([
                 nn.Linear(dim * 2, dim) if has_skip else None,
-                Attention(dim = dim, dim_head = dim_head, heads = heads),
+                Attention(dim = dim, dim_head = dim_head, heads = heads, flash = attn_flash),
                 FeedForward(dim = dim, mult = ff_mult)
             ]))
 
@@ -158,7 +160,8 @@ class DurationPredictor(Module):
         dim_head = 64,
         heads = 8,
         ff_mult = 4,
-        conv_pos_embed_kernel_size = 31
+        conv_pos_embed_kernel_size = 31,
+        attn_flash = False
     ):
         super().__init__()
         self.conv_embed = ConvPositionEmbed(
@@ -171,7 +174,8 @@ class DurationPredictor(Module):
             depth = depth,
             dim_head = dim_head,
             heads = heads,
-            ff_mult = ff_mult
+            ff_mult = ff_mult,
+            attn_flash = attn_flash
         )
 
     def forward(self, x):
@@ -188,7 +192,8 @@ class VoiceBox(Module):
         dim_head = 64,
         heads = 16,
         ff_mult = 4,
-        conv_pos_embed_kernel_size = 31
+        conv_pos_embed_kernel_size = 31,
+        attn_flash = False
     ):
         super().__init__()
         self.conv_embed = ConvPositionEmbed(
@@ -201,7 +206,8 @@ class VoiceBox(Module):
             depth = depth,
             dim_head = dim_head,
             heads = heads,
-            ff_mult = ff_mult
+            ff_mult = ff_mult,
+            attn_flash = attn_flash
         )
 
     def forward(self, x):
