@@ -20,6 +20,32 @@ def default(val, d):
 def divisible_by(num, den):
     return (num % den) == 0
 
+# rotary positional embeddings
+# https://arxiv.org/abs/2104.09864
+
+class RotaryEmbedding(Module):
+    def __init__(self, dim, theta = 10000):
+        super().__init__()
+        inv_freq = 1.0 / (theta ** (torch.arange(0, dim, 2).float() / dim))
+        self.register_buffer("inv_freq", inv_freq)
+
+    @property
+    def device(self):
+        return self.inv_freq.device
+
+    def forward(self, seq_len):
+        t = torch.arange(seq_len, device = self.device).type_as(self.inv_freq)
+        freqs = torch.einsum('i , j -> i j', t, self.inv_freq)
+        freqs = torch.cat((freqs, freqs), dim = -1)
+        return freqs
+
+def rotate_half(x):
+    x1, x2 = x.chunk(2, dim = -1)
+    return torch.cat((-x2, x1), dim = -1)
+
+def apply_rotary_pos_emb(pos, t):
+    return t * pos.cos() + rotate_half(t) * pos.sin()
+
 # convolutional positional generating module
 
 def DepthWiseConv1d(
@@ -79,13 +105,16 @@ class Attention(Module):
         self.to_qkv = nn.Linear(dim, dim_inner * 3, bias = False)
         self.to_out = nn.Linear(dim_inner, dim, bias = False)
 
-    def forward(self, x, mask = None):
+    def forward(self, x, mask = None, rotary_emb = None):
         h = self.heads
 
         x = self.norm(x)
 
         q, k, v = self.to_qkv(x).chunk(3, dim = -1)
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = h), (q, k, v))
+
+        if exists(rotary_emb):
+            q, k = map(lambda t: apply_rotary_pos_emb(t, rotary_emb), (q, k))
 
         out = self.attend(q, k, v, mask = mask)
 
@@ -120,6 +149,8 @@ class Transformer(Module):
 
         self.layers = nn.ModuleList([])
 
+        self.rotary_emb = RotaryEmbedding(dim = dim_head)
+
         for ind in range(depth):
             layer = ind + 1
             has_skip = layer > (depth // 2)
@@ -133,6 +164,8 @@ class Transformer(Module):
     def forward(self, x):
         skip_connects = []
 
+        rotary_emb = self.rotary_emb(x.shape[-2])
+
         for skip_combiner, attn, ff in self.layers:
 
             # in the paper, they use a u-net like skip connection
@@ -144,7 +177,7 @@ class Transformer(Module):
                 x = torch.cat((x, skip_connects.pop()), dim = -1)
                 x = skip_combiner(x)
 
-            x = attn(x) + x
+            x = attn(x, rotary_emb = rotary_emb) + x
             x = ff(x) + x
 
         return x

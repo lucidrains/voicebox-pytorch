@@ -4,7 +4,7 @@
 
 Implementation of <a href="https://arxiv.org/abs/2306.15687">Voicebox</a>, new SOTA Text-to-Speech model from MetaAI, in Pytorch. <a href="https://about.fb.com/news/2023/06/introducing-voicebox-ai-for-speech-generation/">Press release</a>
 
-In this work, we will use an alternative to ALiBi positional encoding. The authors seem unaware that ALiBi cannot be straightforwardly used for bidirectional models.
+In this work, we will use rotary embeddings. The authors seem unaware that ALiBi cannot be straightforwardly used for bidirectional models.
 
 ## Citations
 
