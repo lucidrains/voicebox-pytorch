@@ -1,3 +1,4 @@
+import math
 import torch
 from torch import nn, Tensor, einsum
 from torch.nn import Module
@@ -5,7 +6,7 @@ import torch.nn.functional as F
 
 from beartype import beartype
 
-from einops import rearrange, repeat, reduce
+from einops import rearrange, repeat, reduce, pack, unpack
 
 from voicebox_pytorch.attend import Attend
 
@@ -29,6 +30,22 @@ def prob_mask_like(shape, prob, device):
         return torch.zeros(shape, device = device, dtype = torch.bool)
     else:
         return torch.zeros(shape, device = device).float().uniform_(0, 1) < prob
+
+# sinusoidal positions
+
+class SinusoidalPosEmb(Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, x):
+        device = x.device
+        half_dim = self.dim // 2
+        emb = math.log(10000) / (half_dim - 1)
+        emb = torch.exp(torch.arange(half_dim, device = device) * -emb)
+        emb = einsum('i, j -> i j', x, emb)
+        emb = torch.cat((emb.sin(), emb.cos()), dim = -1)
+        return emb
 
 # rotary positional embeddings
 # https://arxiv.org/abs/2104.09864
@@ -308,6 +325,8 @@ class VoiceBox(Module):
         attn_flash = False
     ):
         super().__init__()
+        self.sinu_pos_emb = SinusoidalPosEmb(dim)
+
         self.to_phoneme_emb = nn.Embedding(num_phoneme_tokens, dim_phoneme_emb)
         self.to_embed = nn.Linear(dim * 2 + dim_phoneme_emb, dim)
 
@@ -348,9 +367,10 @@ class VoiceBox(Module):
         *,
         phoneme_ids,
         cond,
+        times,
         cond_drop_prob = 0.,
         target = None,
-        mask = None
+        mask = None,
     ):
         phoneme_emb = self.to_phoneme_emb(phoneme_ids)
         assert cond.shape[-1] == x.shape[-1]
@@ -370,7 +390,21 @@ class VoiceBox(Module):
         x = self.to_embed(embed)
 
         x = self.conv_embed(x) + x
+
+        # add sinusoidal time embedding along time axis
+
+        time_emb = self.sinu_pos_emb(times)
+        x, ps = pack((time_emb, x), 'b * d')
+
+        # attend
+
         x = self.transformer(x)
+
+        # split out time embedding
+
+        _, x = unpack(x, ps, 'b * d')
+
+        # if no target passed in, just return logits
 
         if not exists(target):
             return x
