@@ -18,7 +18,7 @@ setup(
   install_requires=[
     'beartype',
     'einops>=0.6.1',
-    'torch>=1.6',
+    'torch>=2.0',
     'torchdiffeq',
     'torchdyn==1.0.3'
   ],

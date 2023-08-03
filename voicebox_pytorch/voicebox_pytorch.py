@@ -20,6 +20,16 @@ def default(val, d):
 def divisible_by(num, den):
     return (num % den) == 0
 
+# tensor helpers
+
+def prob_mask_like(shape, prob, device):
+    if prob == 1:
+        return torch.ones(shape, device = device, dtype = torch.bool)
+    elif prob == 0:
+        return torch.zeros(shape, device = device, dtype = torch.bool)
+    else:
+        return torch.zeros(shape, device = device).float().uniform_(0, 1) < prob
+
 # rotary positional embeddings
 # https://arxiv.org/abs/2104.09864
 
@@ -202,6 +212,8 @@ class DurationPredictor(Module):
         self.to_phoneme_emb = nn.Embedding(num_phoneme_tokens, dim_phoneme_emb)
         self.to_embed = nn.Linear(dim * 2 + dim_phoneme_emb, dim)
 
+        self.null_cond = nn.Parameter(torch.zeros(dim))
+
         self.conv_embed = ConvPositionEmbed(
             dim = dim,
             kernel_size = conv_pos_embed_kernel_size
@@ -216,17 +228,46 @@ class DurationPredictor(Module):
             attn_flash = attn_flash
         )
 
+    @torch.inference_mode()
+    def forward_with_cond_scale(
+        self,
+        *args,
+        cond_scale = 1.,
+        **kwargs
+    ):
+        logits = self.forward(*args, cond_drop_prob = 0., **kwargs)
+
+        if cond_scale == 1.:
+            return logits
+
+        null_logits = self.forward(*args, cond_drop_prob = 1., **kwargs)
+        return null_logits + (logits - null_logits) * cond_scale
+
     def forward(
         self,
         x,
         *,
         phoneme_ids,
         cond,
+        cond_drop_prob = 0.,
         target = None,
         mask = None
     ):
         phoneme_emb = self.to_phoneme_emb(phoneme_ids)
         assert cond.shape[-1] == x.shape[-1]
+
+        # classifier free guidance
+
+        if cond_drop_prob > 0.:
+            cond_drop_mask = prob_mask_like(cond.shape[:1], cond_drop_prob, cond.device)
+
+            cond = torch.where(
+                rearrange(cond_drop_mask, '... -> ... 1 1'),
+                self.null_cond,
+                cond
+            )
+
+        # combine audio, phoneme, conditioning
 
         embed = torch.cat((x, phoneme_emb, cond), dim = -1)
         x = self.to_embed(embed)
@@ -270,6 +311,8 @@ class VoiceBox(Module):
         self.to_phoneme_emb = nn.Embedding(num_phoneme_tokens, dim_phoneme_emb)
         self.to_embed = nn.Linear(dim * 2 + dim_phoneme_emb, dim)
 
+        self.null_cond = nn.Parameter(torch.zeros(dim))
+
         self.conv_embed = ConvPositionEmbed(
             dim = dim,
             kernel_size = conv_pos_embed_kernel_size
@@ -284,17 +327,44 @@ class VoiceBox(Module):
             attn_flash = attn_flash
         )
 
+    @torch.inference_mode()
+    def forward_with_cond_scale(
+        self,
+        *args,
+        cond_scale = 1.,
+        **kwargs
+    ):
+        logits = self.forward(*args, cond_drop_prob = 0., **kwargs)
+
+        if cond_scale == 1.:
+            return logits
+
+        null_logits = self.forward(*args, cond_drop_prob = 1., **kwargs)
+        return null_logits + (logits - null_logits) * cond_scale
+
     def forward(
         self,
         x,
         *,
         phoneme_ids,
         cond,
+        cond_drop_prob = 0.,
         target = None,
         mask = None
     ):
         phoneme_emb = self.to_phoneme_emb(phoneme_ids)
         assert cond.shape[-1] == x.shape[-1]
+
+        # classifier free guidance
+
+        if cond_drop_prob > 0.:
+            cond_drop_mask = prob_mask_like(cond.shape[:1], cond_drop_prob, cond.device)
+
+            cond = torch.where(
+                rearrange(cond_drop_mask, '... -> ... 1 1'),
+                self.null_cond,
+                cond
+            )
 
         embed = torch.cat((x, phoneme_emb, cond), dim = -1)
         x = self.to_embed(embed)
