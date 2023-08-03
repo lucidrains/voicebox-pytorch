@@ -16,9 +16,11 @@ setup(
     'text to speech'
   ],
   install_requires=[
+    'beartype',
     'einops>=0.6.1',
     'torch>=1.6',
-    'torchdiffeq'
+    'torchdiffeq',
+    'torchdyn==1.0.3'
   ],
   classifiers=[
     'Development Status :: 4 - Beta',
