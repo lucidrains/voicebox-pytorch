@@ -21,6 +21,9 @@ def default(val, d):
 def divisible_by(num, den):
     return (num % den) == 0
 
+def is_odd(n):
+    return not divisible_by(n, 2)
+
 # tensor helpers
 
 def prob_mask_like(shape, prob, device):
@@ -75,23 +78,20 @@ def apply_rotary_pos_emb(pos, t):
 
 # convolutional positional generating module
 
-def DepthWiseConv1d(
-    dim,
-    kernel_size
-):
-    assert not divisible_by(kernel_size, 2)
-    return nn.Conv1d(dim, dim, kernel_size, groups = dim, padding = kernel_size // 2)
-
 class ConvPositionEmbed(Module):
     def __init__(
         self,
         dim,
         *,
-        kernel_size
+        kernel_size,
+        groups = None
     ):
         super().__init__()
+        assert is_odd(kernel_size)
+        groups = default(groups, dim) # full depthwise conv by default
+
         self.dw_conv1d = nn.Sequential(
-            DepthWiseConv1d(dim, kernel_size),
+            nn.Conv1d(dim, dim, kernel_size, groups = groups, padding = kernel_size // 2),
             nn.GELU()
         )
 
@@ -223,6 +223,7 @@ class DurationPredictor(Module):
         heads = 8,
         ff_mult = 4,
         conv_pos_embed_kernel_size = 31,
+        conv_pos_embed_groups = None,
         attn_flash = False
     ):
         super().__init__()
@@ -233,7 +234,8 @@ class DurationPredictor(Module):
 
         self.conv_embed = ConvPositionEmbed(
             dim = dim,
-            kernel_size = conv_pos_embed_kernel_size
+            kernel_size = conv_pos_embed_kernel_size,
+            groups = conv_pos_embed_groups
         )
 
         self.transformer = Transformer(
@@ -322,6 +324,7 @@ class VoiceBox(Module):
         heads = 16,
         ff_mult = 4,
         conv_pos_embed_kernel_size = 31,
+        conv_pos_embed_groups = None,
         attn_flash = False
     ):
         super().__init__()
@@ -334,7 +337,8 @@ class VoiceBox(Module):
 
         self.conv_embed = ConvPositionEmbed(
             dim = dim,
-            kernel_size = conv_pos_embed_kernel_size
+            kernel_size = conv_pos_embed_kernel_size,
+            groups = conv_pos_embed_groups
         )
 
         self.transformer = Transformer(
