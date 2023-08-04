@@ -36,19 +36,20 @@ def prob_mask_like(shape, prob, device):
 
 # sinusoidal positions
 
-class SinusoidalPosEmb(Module):
+class LearnedSinusoidalPosEmb(Module):
+    """ used by @crowsonkb """
+
     def __init__(self, dim):
         super().__init__()
-        self.dim = dim
+        assert divisible_by(dim, 2)
+        half_dim = dim // 2
+        self.weights = nn.Parameter(torch.randn(half_dim))
 
     def forward(self, x):
-        device = x.device
-        half_dim = self.dim // 2
-        emb = math.log(10000) / (half_dim - 1)
-        emb = torch.exp(torch.arange(half_dim, device = device) * -emb)
-        emb = einsum('i, j -> i j', x, emb)
-        emb = torch.cat((emb.sin(), emb.cos()), dim = -1)
-        return emb
+        x = rearrange(x, 'b -> b 1')
+        freqs = x * rearrange(self.weights, 'd -> 1 d') * 2 * math.pi
+        fouriered = torch.cat((freqs.sin(), freqs.cos()), dim = -1)
+        return fouriered
 
 # rotary positional embeddings
 # https://arxiv.org/abs/2104.09864
@@ -328,7 +329,7 @@ class VoiceBox(Module):
         attn_flash = False
     ):
         super().__init__()
-        self.sinu_pos_emb = SinusoidalPosEmb(dim)
+        self.sinu_pos_emb = LearnedSinusoidalPosEmb(dim)
 
         self.to_phoneme_emb = nn.Embedding(num_phoneme_tokens, dim_phoneme_emb)
         self.to_embed = nn.Linear(dim * 2 + dim_phoneme_emb, dim)

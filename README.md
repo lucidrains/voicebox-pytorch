@@ -6,6 +6,13 @@ Implementation of <a href="https://arxiv.org/abs/2306.15687">Voicebox</a>, new S
 
 In this work, we will use rotary embeddings. The authors seem unaware that ALiBi cannot be straightforwardly used for bidirectional models.
 
+## Todo
+
+- [ ] consider switching to adaptive rmsnorm for time conditioning
+- [ ] read and internalize original flow matching paper and build out basic training code
+- [ ] take care of mel spec + inverse mel spec
+- [ ] basic trainer
+
 ## Citations
 
 ```bibtex
