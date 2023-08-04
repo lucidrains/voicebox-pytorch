@@ -228,7 +228,10 @@ class DurationPredictor(Module):
         attn_flash = False
     ):
         super().__init__()
-        self.to_phoneme_emb = nn.Embedding(num_phoneme_tokens, dim_phoneme_emb)
+
+        self.null_phoneme_id = num_phoneme_tokens # use last phoneme token as null token for CFG
+        self.to_phoneme_emb = nn.Embedding(num_phoneme_tokens + 1, dim_phoneme_emb)
+
         self.to_embed = nn.Linear(dim * 2 + dim_phoneme_emb, dim)
 
         self.null_cond = nn.Parameter(torch.zeros(dim))
@@ -273,7 +276,6 @@ class DurationPredictor(Module):
         target = None,
         mask = None
     ):
-        phoneme_emb = self.to_phoneme_emb(phoneme_ids)
         assert cond.shape[-1] == x.shape[-1]
 
         # classifier free guidance
@@ -286,6 +288,14 @@ class DurationPredictor(Module):
                 self.null_cond,
                 cond
             )
+
+            phoneme_ids = torch.where(
+                rearrange(cond_drop_mask, '... -> ... 1'),
+                self.null_phoneme_id,
+                phoneme_ids
+            )
+
+        phoneme_emb = self.to_phoneme_emb(phoneme_ids)
 
         # combine audio, phoneme, conditioning
 
@@ -331,7 +341,9 @@ class VoiceBox(Module):
         super().__init__()
         self.sinu_pos_emb = LearnedSinusoidalPosEmb(dim)
 
-        self.to_phoneme_emb = nn.Embedding(num_phoneme_tokens, dim_phoneme_emb)
+        self.null_phoneme_id = num_phoneme_tokens # use last phoneme token as null token for CFG
+        self.to_phoneme_emb = nn.Embedding(num_phoneme_tokens + 1, dim_phoneme_emb)
+
         self.to_embed = nn.Linear(dim * 2 + dim_phoneme_emb, dim)
 
         self.null_cond = nn.Parameter(torch.zeros(dim))
@@ -373,11 +385,10 @@ class VoiceBox(Module):
         phoneme_ids,
         cond,
         times,
-        cond_drop_prob = 0.,
+        cond_drop_prob = 0.1,
         target = None,
         mask = None,
     ):
-        phoneme_emb = self.to_phoneme_emb(phoneme_ids)
         assert cond.shape[-1] == x.shape[-1]
 
         # classifier free guidance
@@ -391,6 +402,13 @@ class VoiceBox(Module):
                 cond
             )
 
+            phoneme_ids = torch.where(
+                rearrange(cond_drop_mask, '... -> ... 1'),
+                self.null_phoneme_id,
+                phoneme_ids
+            )
+
+        phoneme_emb = self.to_phoneme_emb(phoneme_ids)
         embed = torch.cat((x, phoneme_emb, cond), dim = -1)
         x = self.to_embed(embed)
 
