@@ -10,6 +10,8 @@ from einops import rearrange, repeat, reduce, pack, unpack
 
 from voicebox_pytorch.attend import Attend
 
+from torchdyn.core import NeuralODE
+
 # helper functions
 
 def exists(val):
@@ -451,13 +453,71 @@ class VoiceBox(Module):
 
 # wrapper for the CNF
 
-class CNFWrapper(Module):
+class ConditionalFlowMatcherWrapper(Module):
     @beartype
     def __init__(
         self,
-        voicebox: VoiceBox
+        voicebox: VoiceBox,
+        sigma = 0.,
+        node_solver = 'dopri5',
+        node_sensitivity = 'adjoint',
+        node_atol = 1e-5,
+        node_rtol = 1e-5
     ):
         super().__init__()
+        self.sigma = sigma
+        self.voicebox = voicebox
 
-    def forward(self, x):
-        return x
+        self.node = NeuralODE(
+            voicebox,
+            solver = node_solver,
+            sensitivity = node_sensitivity,
+            atol = node_atol,
+            rtol = node_rtol
+        )
+
+    def forward(
+        self,
+        x1,
+        *,
+        phoneme_ids,
+        cond,
+        mask = None,
+    ):
+        """
+        following the example put forth
+        https://github.com/atong01/conditional-flow-matching/blob/main/torchcfm/conditional_flow_matching.py#L248
+        """
+        batch, dtype = x1.shape[0], x1.dtype
+
+        x0 = torch.randn_like(x1)
+
+        # random times
+
+        times = torch.rand((batch,), dtype = dtype)
+
+        # sample xt
+
+        mu_t = times * x1
+        sigma_t = 1 - (1 - self.sigma) * times
+        sigma_t = rearrange(sigma_t, 'b -> b 1 1')
+
+        eps = torch.rand_like(x1)
+        xt = mu_t * sigma_t * eps
+
+        conditional_flow = (x1 - (1 - self.sigma) * xt) / sigma_t
+
+        # predict
+
+        self.voicebox.train()
+
+        loss = self.voicebox(
+            xt,
+            phoneme_ids = phoneme_ids,
+            cond = cond,
+            mask = mask,
+            times = times,
+            target = conditional_flow
+        )
+
+        return loss

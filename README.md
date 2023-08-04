@@ -6,11 +6,54 @@ Implementation of <a href="https://arxiv.org/abs/2306.15687">Voicebox</a>, new S
 
 In this work, we will use rotary embeddings. The authors seem unaware that ALiBi cannot be straightforwardly used for bidirectional models.
 
+## Install
+
+```bash
+$ pip install voicebox-pytorch
+```
+
+## Usage
+
+```python
+import torch
+from voicebox_pytorch.voicebox_pytorch import (
+    VoiceBox,
+    ConditionalFlowMatcherWrapper
+)
+
+model = VoiceBox(
+    dim = 512,
+    num_phoneme_tokens = 256,
+    depth = 2,
+    dim_head = 64,
+    heads = 16
+)
+
+cfm_wrapper = ConditionalFlowMatcherWrapper(
+    voicebox = model
+)
+
+x = torch.randn(1, 1024, 512)
+phonemes = torch.randint(0, 256, (1, 1024))
+mask = torch.randint(0, 2, (1, 1024))
+
+loss = cfm_wrapper(
+    x,
+    phoneme_ids = phonemes,
+    cond = x,
+    mask = mask
+)
+
+loss.backward()
+```
+
 ## Todo
 
+- [x] read and internalize original flow matching paper
+    - [x] basic loss
+    - [ ] get neural ode working with torchdyn
 - [ ] consider switching to adaptive rmsnorm for time conditioning
-- [ ] read and internalize original flow matching paper and build out basic training code
-- [ ] take care of mel spec + inverse mel spec
+- [ ] integrate with either hifi-gan or soundstream / encodec
 - [ ] basic trainer
 
 ## Citations
