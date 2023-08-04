@@ -459,6 +459,21 @@ class VoiceBox(Module):
 
         return loss.mean()
 
+# neural ode voicebox wrapper
+
+class NeuralODEVoiceboxWrapper(Module):
+    @beartype
+    def __init__(
+        self,
+        voicebox: VoiceBox
+    ):
+        super().__init__()
+        self.voicebox = voicebox
+        self.forward_kwargs = dict()
+
+    def forward(self, t, x):
+        return self.voicebox.forward_with_cond_scale(x, times = t, **self.forward_kwargs)
+
 # wrapper for the CNF
 
 class ConditionalFlowMatcherWrapper(Module):
@@ -497,25 +512,26 @@ class ConditionalFlowMatcherWrapper(Module):
         phoneme_ids,
         cond,
         mask = None,
-        steps = 18,
+        steps = 2,
         cond_scale = 1.
     ):
         self.voicebox.eval()
 
-        def voicebox_forward_with_cond_scale(t, x):
-            return self.voicebox.forward_with_cond_scale(
-                x,
-                phoneme_ids = phoneme_ids,
-                times = t,
-                cond = cond,
-                mask = mask,
-                cond_scale = cond_scale
-            )
+        wrapped_voicebox = NeuralODEVoiceboxWrapper(self.voicebox)
+
+        wrapped_voicebox.forward_kwargs = dict(
+            phoneme_ids = phoneme_ids,
+            cond = cond,
+            mask = mask,
+            cond_scale = cond_scale
+        )
 
         node = NeuralODE(
-            voicebox_forward_with_cond_scale,
+            wrapped_voicebox,
             **self.node_kwargs
         )
+
+        print('sampling...')
 
         traj = node.trajectory(
             torch.randn_like(cond),
