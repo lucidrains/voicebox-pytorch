@@ -6,6 +6,12 @@ Implementation of <a href="https://arxiv.org/abs/2306.15687">Voicebox</a>, new S
 
 In this work, we will use rotary embeddings. The authors seem unaware that ALiBi cannot be straightforwardly used for bidirectional models.
 
+## Appreciation
+
+- <a href="https://stability.ai/">StabilityAI</a> for the generous sponsorship, as well as my other sponsors, for affording me the independence to open source artificial intelligence.
+
+- <a href="https://github.com/b-chiang">Bryan Chiang</a> for the ongoing code review, sharing his expertise on TTS, and pointing me to <a href="https://github.com/atong01/conditional-flow-matching">an open sourced implementation</a> of conditional flow matching
+
 ## Install
 
 ```bash
