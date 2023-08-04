@@ -51,6 +51,14 @@ loss = cfm_wrapper(
 )
 
 loss.backward()
+
+# after much training above...
+
+sampled = cfm_wrapper.sample(
+    phoneme_ids = phonemes,
+    cond = x,
+    mask = mask
+)
 ```
 
 ## Todo
