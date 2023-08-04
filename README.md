@@ -69,6 +69,7 @@ sampled = cfm_wrapper.sample(
 - [ ] consider switching to adaptive rmsnorm for time conditioning
 - [ ] integrate with either hifi-gan or soundstream / encodec
 - [ ] basic trainer
+- [ ] get basic mask generation logic with the p_drop of 0.2-0.3 for ICL
 
 ## Citations
 
