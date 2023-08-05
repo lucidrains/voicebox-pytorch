@@ -36,6 +36,39 @@ def prob_mask_like(shape, prob, device):
     else:
         return torch.zeros(shape, device = device).float().uniform_(0, 1) < prob
 
+# mask construction helpers
+
+def mask_from_start_end_indices(
+    seq_len: int,
+    start: Tensor,
+    end: Tensor
+):
+    assert start.shape == end.shape
+    device = start.device
+
+    seq = torch.arange(seq_len, device = device, dtype = torch.long)
+    seq = seq.reshape(*((-1,) * start.ndim), seq_len)
+    seq = seq.expand(*start.shape, seq_len)
+
+    mask = seq >= start[..., None].long()
+    mask &= seq < end[..., None].long()
+    return mask
+
+def mask_from_frac_lengths(
+    seq_len: int,
+    frac_lengths: Tensor
+):
+    device = frac_lengths
+
+    lengths = (frac_lengths * seq_len).long()
+    max_start = seq_len - lengths
+
+    rand = torch.zeros_like(frac_lengths).float().uniform_(0, 1)
+    start = (max_start * rand).clamp(min = 0)
+    end = start + lengths
+
+    return mask_from_start_end_indices(seq_len, start, end)
+
 # sinusoidal positions
 
 class LearnedSinusoidalPosEmb(Module):
@@ -312,15 +345,14 @@ class DurationPredictor(Module):
 
         loss = F.l1_loss(x, target, reduction = 'none')
 
-        if exists(mask):
-            loss = reduce(loss, 'b n d -> b n', 'mean')
-            loss = loss.masked_fill(mask, 0.)
+        loss = reduce(loss, 'b n d -> b n', 'mean')
+        loss = loss.masked_fill(mask, 0.)
 
-            # masked mean
+        # masked mean
 
-            num = reduce(loss, 'b n -> b', 'sum')
-            den = mask.sum(dim = -1).clamp(min = 1e-5)
-            loss = num / den
+        num = reduce(loss, 'b n -> b', 'sum')
+        den = mask.sum(dim = -1).clamp(min = 1e-5)
+        loss = num / den
 
         return loss.mean()
 
@@ -447,15 +479,14 @@ class VoiceBox(Module):
 
         loss = F.mse_loss(x, target, reduction = 'none')
 
-        if exists(mask):
-            loss = reduce(loss, 'b n d -> b n', 'mean')
-            loss = loss.masked_fill(mask, 0.)
+        loss = reduce(loss, 'b n d -> b n', 'mean')
+        loss = loss.masked_fill(mask, 0.)
 
-            # masked mean
+        # masked mean
 
-            num = reduce(loss, 'b n -> b', 'sum')
-            den = mask.sum(dim = -1).clamp(min = 1e-5)
-            loss = num / den
+        num = reduce(loss, 'b n -> b', 'sum')
+        den = mask.sum(dim = -1).clamp(min = 1e-5)
+        loss = num / den
 
         return loss.mean()
 
@@ -486,13 +517,16 @@ class ConditionalFlowMatcherWrapper(Module):
         node_sensitivity = 'adjoint',
         node_atol = 1e-5,
         node_rtol = 1e-5,
-        cond_drop_prob = 0.
+        cond_drop_prob = 0.,
+        prob_seq_drop = 0.3  # not entirely sure
     ):
         super().__init__()
         self.sigma = sigma
 
         self.voicebox = voicebox
         self.cond_drop_prob = cond_drop_prob
+
+        self.prob_seq_drop = prob_seq_drop
 
         self.node_kwargs = dict(
             solver = node_solver,
@@ -552,7 +586,7 @@ class ConditionalFlowMatcherWrapper(Module):
         following the example put forth
         https://github.com/atong01/conditional-flow-matching/blob/main/torchcfm/conditional_flow_matching.py#L248
         """
-        batch, dtype = x1.shape[0], x1.dtype
+        batch, seq_len, dtype = *x1.shape[:2], x1.dtype
 
         x0 = torch.randn_like(x1)
 
@@ -569,7 +603,17 @@ class ConditionalFlowMatcherWrapper(Module):
         eps = torch.rand_like(x1)
         xt = mu_t + sigma_t * eps
 
-        conditional_flow = (x1 - (1 - self.sigma) * xt) / sigma_t
+        flow = (x1 - (1 - self.sigma) * xt) / sigma_t
+
+        # construct mask if not given
+
+        if (
+            not exists(mask) and
+            exists(self.prob_seq_drop) and
+            self.prob_seq_drop > 0.
+        ):
+            frac_lengths = torch.full((batch,), self.prob_seq_drop, device = self.device)
+            mask = mask_from_frac_lengths(seq_len, frac_lengths)
 
         # predict
 
@@ -581,7 +625,7 @@ class ConditionalFlowMatcherWrapper(Module):
             cond = cond,
             mask = mask,
             times = times,
-            target = conditional_flow,
+            target = flow,
             cond_drop_prob = self.cond_drop_prob
         )
 

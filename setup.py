@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 setup(
   name = 'voicebox-pytorch',
   packages = find_packages(exclude=[]),
-  version = '0.0.3',
+  version = '0.0.4',
   license='MIT',
   description = 'Voicebox - Pytorch',
   author = 'Phil Wang',
@@ -19,7 +19,8 @@ setup(
     'beartype',
     'einops>=0.6.1',
     'torch>=2.0',
-    'torchdyn==1.0.3'
+    'torchdyn==1.0.3',
+    'torchode'
   ],
   classifiers=[
     'Development Status :: 4 - Beta',
