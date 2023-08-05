@@ -588,8 +588,6 @@ class ConditionalFlowMatcherWrapper(Module):
         """
         batch, seq_len, dtype = *x1.shape[:2], x1.dtype
 
-        x0 = torch.randn_like(x1)
-
         # random times
 
         times = torch.rand((batch,), dtype = dtype)
