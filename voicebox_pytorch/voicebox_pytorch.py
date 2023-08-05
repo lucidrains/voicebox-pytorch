@@ -567,7 +567,7 @@ class ConditionalFlowMatcherWrapper(Module):
         sigma_t = 1 - (1 - self.sigma) * padded_times
 
         eps = torch.rand_like(x1)
-        xt = mu_t * sigma_t * eps
+        xt = mu_t + sigma_t * eps
 
         conditional_flow = (x1 - (1 - self.sigma) * xt) / sigma_t
 
