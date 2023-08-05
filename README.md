@@ -65,11 +65,12 @@ sampled = cfm_wrapper.sample(
 
 - [x] read and internalize original flow matching paper
     - [x] basic loss
-    - [ ] get neural ode working with torchdyn
+    - [x] get neural ode working with torchdyn
+- [x] get basic mask generation logic with the p_drop of 0.2-0.3 for ICL
+
 - [ ] consider switching to adaptive rmsnorm for time conditioning
-- [ ] integrate with either hifi-gan or soundstream / encodec
+- [ ] integrate with either hifi-gan and soundstream / encodec
 - [ ] basic trainer
-- [ ] get basic mask generation logic with the p_drop of 0.2-0.3 for ICL
 - [ ] look at alternatives to torchsde (torchode, torchdiffeq etc), since the space seems to be immature. perhaps offer way to use different packages and see which ones researcher gets best results with
 
 ## Citations
