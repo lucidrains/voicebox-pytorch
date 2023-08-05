@@ -583,25 +583,26 @@ class ConditionalFlowMatcherWrapper(Module):
         mask = None,
     ):
         """
-        following the example put forth
-        https://github.com/atong01/conditional-flow-matching/blob/main/torchcfm/conditional_flow_matching.py#L248
+        following eq (5) (6) in https://arxiv.org/pdf/2306.15687.pdf
+        using https://github.com/atong01/conditional-flow-matching/blob/main/torchcfm/conditional_flow_matching.py as reference
         """
-        batch, seq_len, dtype = *x1.shape[:2], x1.dtype
+
+        batch, seq_len, dtype, σ = *x1.shape[:2], x1.dtype, self.sigma
+
+        x0 = torch.randn_like(x1)
 
         # random times
 
         times = torch.rand((batch,), dtype = dtype)
-        padded_times = rearrange(times, 'b -> b 1 1')
+        t = rearrange(times, 'b -> b 1 1')
 
-        # sample xt
+        # sample xt (w in the paper)
 
-        mu_t = padded_times * x1
-        sigma_t = 1 - (1 - self.sigma) * padded_times
+        mu_t = t * x1
+        σt = (1 - (1 - σ) * t) * x0
+        w = mu_t + σt
 
-        eps = torch.rand_like(x1)
-        xt = mu_t + sigma_t * eps
-
-        flow = (x1 - (1 - self.sigma) * xt) / sigma_t
+        flow = x1 - (1 - σ) * x0
 
         # construct mask if not given
 
@@ -618,7 +619,7 @@ class ConditionalFlowMatcherWrapper(Module):
         self.voicebox.train()
 
         loss = self.voicebox(
-            xt,
+            w,
             phoneme_ids = phoneme_ids,
             cond = cond,
             mask = mask,
