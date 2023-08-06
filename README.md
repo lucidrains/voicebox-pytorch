@@ -70,8 +70,8 @@ sampled = cfm_wrapper.sample(
     - [x] get neural ode working with torchdyn
 - [x] get basic mask generation logic with the p_drop of 0.2-0.3 for ICL
 - [x] just use torchdiffeq, nothing else is mature. torchode looks promising but cannot support ndim > 2
+- [x] take care of p_drop, different between voicebox and duration model
 
-- [ ] take care of p_drop, different between voicebox and duration model
 - [ ] consider switching to adaptive rmsnorm for time conditioning
 - [ ] integrate with either hifi-gan and soundstream / encodec
 - [ ] basic trainer

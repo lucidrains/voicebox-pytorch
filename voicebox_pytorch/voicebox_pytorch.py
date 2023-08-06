@@ -1,4 +1,5 @@
 import math
+from random import random
 
 import torch
 from torch import nn, Tensor, einsum
@@ -27,6 +28,9 @@ def divisible_by(num, den):
 
 def is_odd(n):
     return not divisible_by(n, 2)
+
+def coin_flip():
+    return random() < 0.5
 
 # tensor helpers
 
@@ -265,6 +269,7 @@ class DurationPredictor(Module):
         conv_pos_embed_kernel_size = 31,
         conv_pos_embed_groups = None,
         attn_flash = False,
+        p_drop_prob = 0.2, # p_drop in paper
         frac_lengths_mask: Tuple[float, float] = (0.1, 1.)
     ):
         super().__init__()
@@ -272,6 +277,7 @@ class DurationPredictor(Module):
         self.null_phoneme_id = num_phoneme_tokens # use last phoneme token as null token for CFG
         self.to_phoneme_emb = nn.Embedding(num_phoneme_tokens + 1, dim_phoneme_emb)
 
+        self.p_drop_prob = p_drop_prob
         self.frac_lengths_mask = frac_lengths_mask
 
         self.to_embed = nn.Linear(dim * 2 + dim_phoneme_emb, dim)
@@ -333,8 +339,11 @@ class DurationPredictor(Module):
         # construct mask if not given
 
         if not exists(mask):
-            frac_lengths = torch.zeros((batch,), device = self.device).float().uniform_(*self.frac_lengths_mask)
-            mask = mask_from_frac_lengths(seq_len, frac_lengths)
+            if coin_flip():
+                frac_lengths = torch.zeros((batch,), device = self.device).float().uniform_(*self.frac_lengths_mask)
+                mask = mask_from_frac_lengths(seq_len, frac_lengths)
+            else:
+                mask = prob_mask_like((batch, seq_len), self.p_drop_prob, self.device)
 
         # classifier free guidance
 
@@ -392,6 +401,7 @@ class VoiceBox(Module):
         conv_pos_embed_kernel_size = 31,
         conv_pos_embed_groups = None,
         attn_flash = False,
+        p_drop_prob = 0.3, # p_drop in paper
         frac_lengths_mask: Tuple[float, float] = (0.7, 1.)
     ):
         super().__init__()
@@ -400,6 +410,7 @@ class VoiceBox(Module):
         self.null_phoneme_id = num_phoneme_tokens # use last phoneme token as null token for CFG
         self.to_phoneme_emb = nn.Embedding(num_phoneme_tokens + 1, dim_phoneme_emb)
 
+        self.p_drop_prob = p_drop_prob
         self.frac_lengths_mask = frac_lengths_mask
 
         self.to_embed = nn.Linear(dim * 2 + dim_phoneme_emb, dim)
@@ -467,13 +478,16 @@ class VoiceBox(Module):
         # construct mask if not given
 
         if not exists(mask):
-            frac_lengths = torch.zeros((batch,), device = self.device).float().uniform_(*self.frac_lengths_mask)
-            mask = mask_from_frac_lengths(seq_len, frac_lengths)
+            if coin_flip():
+                frac_lengths = torch.zeros((batch,), device = self.device).float().uniform_(*self.frac_lengths_mask)
+                mask = mask_from_frac_lengths(seq_len, frac_lengths)
+            else:
+                mask = prob_mask_like((batch, seq_len), self.p_drop_prob, self.device)
 
         # classifier free guidance
 
         if cond_drop_prob > 0.:
-            cond_drop_mask = prob_mask_like(cond.shape[:1], cond_drop_prob, cond.device)
+            cond_drop_mask = prob_mask_like(cond.shape[:1], cond_drop_prob, self.device)
 
             cond = torch.where(
                 rearrange(cond_drop_mask, '... -> ... 1 1'),
