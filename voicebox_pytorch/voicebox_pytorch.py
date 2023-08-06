@@ -224,6 +224,8 @@ class Transformer(Module):
                 FeedForward(dim = dim, mult = ff_mult)
             ]))
 
+        self.final_norm = RMSNorm(dim)
+
     def forward(self, x):
         skip_connects = []
 
@@ -243,7 +245,7 @@ class Transformer(Module):
             x = attn(x, rotary_emb = rotary_emb) + x
             x = ff(x) + x
 
-        return x
+        return self.final_norm(x)
 
 # both duration and main denoising model are transformers
 
@@ -284,6 +286,11 @@ class DurationPredictor(Module):
             heads = heads,
             ff_mult = ff_mult,
             attn_flash = attn_flash
+        )
+
+        self.to_pred = nn.Sequential(
+            nn.Linear(dim, 1),
+            Rearrange('... 1 -> ...')
         )
 
     @torch.inference_mode()
@@ -344,8 +351,6 @@ class DurationPredictor(Module):
             return F.l1_loss(x, target)
 
         loss = F.l1_loss(x, target, reduction = 'none')
-
-        loss = reduce(loss, 'b n d -> b n', 'mean')
         loss = loss.masked_fill(mask, 0.)
 
         # masked mean
@@ -396,6 +401,8 @@ class VoiceBox(Module):
             ff_mult = ff_mult,
             attn_flash = attn_flash
         )
+
+        self.to_pred = nn.Linear(dim, dim, bias = False)
 
     @torch.inference_mode()
     def forward_with_cond_scale(
@@ -464,6 +471,8 @@ class VoiceBox(Module):
         # attend
 
         x = self.transformer(x)
+
+        x = self.to_pred(x)
 
         # split out time embedding
 
