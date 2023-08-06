@@ -20,6 +20,9 @@ from voicebox_pytorch.attend import Attend
 def exists(val):
     return val is not None
 
+def identity(t):
+    return t
+
 def default(val, d):
     return val if exists(val) else d
 
@@ -611,6 +614,7 @@ class ConditionalFlowMatcherWrapper(Module):
         phoneme_ids,
         cond,
         mask = None,
+        use_torchcfm_impl = False
     ):
         """
         following eq (5) (6) in https://arxiv.org/pdf/2306.15687.pdf
@@ -621,6 +625,11 @@ class ConditionalFlowMatcherWrapper(Module):
 
         x0 = torch.randn_like(x1)
 
+        # a tiny difference between the paper and Alex Tong's torchcfm implementation, is that he uses a different sample gaussian noise for epsilon for calculating w
+        # not sure what is correct
+
+        to_eps = identity if not use_torchcfm_impl else torch.randn_like
+
         # random times
 
         times = torch.rand((batch,), dtype = dtype, device = self.device)
@@ -628,7 +637,7 @@ class ConditionalFlowMatcherWrapper(Module):
 
         # sample xt (w in the paper)
 
-        w = (1 - (1 - σ) * t) * x0 + t * x1
+        w = (1 - (1 - σ) * t) * to_eps(x0) + t * x1
 
         flow = x1 - (1 - σ) * x0
 
