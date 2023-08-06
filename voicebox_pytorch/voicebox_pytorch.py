@@ -518,7 +518,9 @@ class ConditionalFlowMatcherWrapper(Module):
         self.sigma = sigma
 
         self.voicebox = voicebox
+
         self.cond_drop_prob = cond_drop_prob
+        self.prob_seq_drop = prob_seq_drop
 
         self.odeint_kwargs = dict(
             atol = ode_atol,
