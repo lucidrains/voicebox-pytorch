@@ -1,4 +1,5 @@
 import math
+
 import torch
 from torch import nn, Tensor, einsum
 from torch.nn import Module
@@ -11,8 +12,6 @@ from beartype import beartype
 from einops import rearrange, repeat, reduce, pack, unpack
 
 from voicebox_pytorch.attend import Attend
-
-from torchdyn.core import NeuralODE
 
 # helper functions
 
