@@ -598,9 +598,7 @@ class ConditionalFlowMatcherWrapper(Module):
 
         # sample xt (w in the paper)
 
-        mu_t = t * x1
-        σt = (1 - (1 - σ) * t) * x0
-        w = mu_t + σt
+        w = (1 - (1 - σ) * t) * x0 + t * x1
 
         flow = x1 - (1 - σ) * x0
 
