@@ -4,6 +4,8 @@ from torch import nn, Tensor, einsum
 from torch.nn import Module
 import torch.nn.functional as F
 
+from torchdiffeq import odeint_adjoint as odeint
+
 from beartype import beartype
 
 from einops import rearrange, repeat, reduce, pack, unpack
@@ -432,7 +434,7 @@ class VoiceBox(Module):
     ):
         assert cond.shape[-1] == x.shape[-1]
 
-        # auto manage shape of times, for node.traj
+        # auto manage shape of times, for odeint times
 
         if times.ndim == 0:
             times = repeat(times, '-> b', b = cond.shape[0])
@@ -499,21 +501,6 @@ class VoiceBox(Module):
 
         return loss.mean()
 
-# neural ode voicebox wrapper
-
-class NeuralODEVoiceboxWrapper(Module):
-    @beartype
-    def __init__(
-        self,
-        voicebox: VoiceBox
-    ):
-        super().__init__()
-        self.voicebox = voicebox
-        self.forward_kwargs = dict()
-
-    def forward(self, t, x):
-        return self.voicebox.forward_with_cond_scale(x, times = t, **self.forward_kwargs)
-
 # wrapper for the CNF
 
 class ConditionalFlowMatcherWrapper(Module):
@@ -522,10 +509,9 @@ class ConditionalFlowMatcherWrapper(Module):
         self,
         voicebox: VoiceBox,
         sigma = 0.,
-        node_solver = 'dopri5',
-        node_sensitivity = 'adjoint',
-        node_atol = 1e-5,
-        node_rtol = 1e-5,
+        ode_atol = 1e-5,
+        ode_rtol = 1e-5,
+        ode_method = 'dopri5',
         cond_drop_prob = 0.,
         prob_seq_drop = 0.3  # not entirely sure
     ):
@@ -535,13 +521,10 @@ class ConditionalFlowMatcherWrapper(Module):
         self.voicebox = voicebox
         self.cond_drop_prob = cond_drop_prob
 
-        self.prob_seq_drop = prob_seq_drop
-
-        self.node_kwargs = dict(
-            solver = node_solver,
-            sensitivity = node_sensitivity,
-            atol = node_atol,
-            rtol = node_rtol
+        self.odeint_kwargs = dict(
+            atol = ode_atol,
+            rtol = ode_rtol,
+            method= ode_method
         )
 
     @property
@@ -560,28 +543,24 @@ class ConditionalFlowMatcherWrapper(Module):
     ):
         self.voicebox.eval()
 
-        wrapped_voicebox = NeuralODEVoiceboxWrapper(self.voicebox)
+        def fn(t, x):
+            return self.voicebox.forward_with_cond_scale(
+                x,
+                times = t,
+                phoneme_ids = phoneme_ids,
+                cond = cond,
+                cond_scale = cond_scale
+            )
 
-        wrapped_voicebox.forward_kwargs = dict(
-            phoneme_ids = phoneme_ids,
-            cond = cond,
-            mask = mask,
-            cond_scale = cond_scale
-        )
+        batch = cond.shape[0]
 
-        node = NeuralODE(
-            wrapped_voicebox,
-            **self.node_kwargs
-        )
+        y0 = torch.randn_like(cond)
+        t = torch.linspace(0, 1, steps, device = self.device)
 
-        print('sampling...')
+        trajectory = odeint(fn, y0, t, adjoint_params=(), **self.odeint_kwargs)
 
-        traj = node.trajectory(
-            torch.randn_like(cond),
-            t_span = torch.linspace(0, 1, steps, device = self.device)
-        )
-
-        return traj
+        sampled = trajectory[-1] # last in trajectory
+        return sampled
 
     def forward(
         self,
@@ -602,7 +581,7 @@ class ConditionalFlowMatcherWrapper(Module):
 
         # random times
 
-        times = torch.rand((batch,), dtype = dtype)
+        times = torch.rand((batch,), dtype = dtype, device = self.device)
         t = rearrange(times, 'b -> b 1 1')
 
         # sample xt (w in the paper)

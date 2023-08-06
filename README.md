@@ -22,7 +22,8 @@ $ pip install voicebox-pytorch
 
 ```python
 import torch
-from voicebox_pytorch.voicebox_pytorch import (
+
+from voicebox_pytorch import (
     VoiceBox,
     ConditionalFlowMatcherWrapper
 )
@@ -39,9 +40,9 @@ cfm_wrapper = ConditionalFlowMatcherWrapper(
     voicebox = model
 )
 
-x = torch.randn(1, 1024, 512)
-phonemes = torch.randint(0, 256, (1, 1024))
-mask = torch.randint(0, 2, (1, 1024))
+x = torch.randn(2, 1024, 512)
+phonemes = torch.randint(0, 256, (2, 1024))
+mask = torch.randint(0, 2, (2, 1024)).bool()
 
 loss = cfm_wrapper(
     x,
@@ -58,7 +59,8 @@ sampled = cfm_wrapper.sample(
     phoneme_ids = phonemes,
     cond = x,
     mask = mask
-)
+) # (2, 1024, 512) <- same as cond
+
 ```
 
 ## Todo
@@ -67,11 +69,11 @@ sampled = cfm_wrapper.sample(
     - [x] basic loss
     - [x] get neural ode working with torchdyn
 - [x] get basic mask generation logic with the p_drop of 0.2-0.3 for ICL
+- [x] just use torchdiffeq, nothing else is mature. torchode looks promising but cannot support ndim > 2
 
 - [ ] consider switching to adaptive rmsnorm for time conditioning
 - [ ] integrate with either hifi-gan and soundstream / encodec
 - [ ] basic trainer
-- [ ] look at alternatives to torchsde (torchode, torchdiffeq etc), since the space seems to be immature. perhaps offer way to use different packages and see which ones researcher gets best results with
 
 ## Citations
 

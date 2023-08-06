@@ -19,9 +19,7 @@ setup(
     'beartype',
     'einops>=0.6.1',
     'torch>=2.0',
-    'torchdiffeq',
-    'torchdyn==1.0.3',
-    'torchode'
+    'torchdiffeq'
   ],
   classifiers=[
     'Development Status :: 4 - Beta',
