@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from torchdiffeq import odeint_adjoint as odeint
 
 from beartype import beartype
+from beartype.typing import Tuple
 
 from einops import rearrange, repeat, reduce, pack, unpack
 
@@ -263,12 +264,15 @@ class DurationPredictor(Module):
         ff_mult = 4,
         conv_pos_embed_kernel_size = 31,
         conv_pos_embed_groups = None,
-        attn_flash = False
+        attn_flash = False,
+        frac_lengths_mask: Tuple[float, float] = (0.1, 1.)
     ):
         super().__init__()
 
         self.null_phoneme_id = num_phoneme_tokens # use last phoneme token as null token for CFG
         self.to_phoneme_emb = nn.Embedding(num_phoneme_tokens + 1, dim_phoneme_emb)
+
+        self.frac_lengths_mask = frac_lengths_mask
 
         self.to_embed = nn.Linear(dim * 2 + dim_phoneme_emb, dim)
 
@@ -293,6 +297,10 @@ class DurationPredictor(Module):
             nn.Linear(dim, 1),
             Rearrange('... 1 -> ...')
         )
+
+    @property
+    def device(self):
+        return next(self.parameters()).device
 
     @torch.inference_mode()
     def forward_with_cond_scale(
@@ -319,7 +327,14 @@ class DurationPredictor(Module):
         target = None,
         mask = None
     ):
-        assert cond.shape[-1] == x.shape[-1]
+        batch, seq_len, cond_dim = cond.shape
+        assert cond_dim == x.shape[-1]
+
+        # construct mask if not given
+
+        if not exists(mask):
+            frac_lengths = torch.zeros((batch,), device = self.device).float().uniform_(*self.frac_lengths_mask)
+            mask = mask_from_frac_lengths(seq_len, frac_lengths)
 
         # classifier free guidance
 
@@ -376,13 +391,16 @@ class VoiceBox(Module):
         ff_mult = 4,
         conv_pos_embed_kernel_size = 31,
         conv_pos_embed_groups = None,
-        attn_flash = False
+        attn_flash = False,
+        frac_lengths_mask: Tuple[float, float] = (0.7, 1.)
     ):
         super().__init__()
         self.sinu_pos_emb = LearnedSinusoidalPosEmb(dim)
 
         self.null_phoneme_id = num_phoneme_tokens # use last phoneme token as null token for CFG
         self.to_phoneme_emb = nn.Embedding(num_phoneme_tokens + 1, dim_phoneme_emb)
+
+        self.frac_lengths_mask = frac_lengths_mask
 
         self.to_embed = nn.Linear(dim * 2 + dim_phoneme_emb, dim)
 
@@ -404,6 +422,10 @@ class VoiceBox(Module):
         )
 
         self.to_pred = nn.Linear(dim, dim, bias = False)
+
+    @property
+    def device(self):
+        return next(self.parameters()).device
 
     @torch.inference_mode()
     def forward_with_cond_scale(
@@ -431,7 +453,8 @@ class VoiceBox(Module):
         target = None,
         mask = None,
     ):
-        assert cond.shape[-1] == x.shape[-1]
+        batch, seq_len, cond_dim = cond.shape
+        assert cond_dim == x.shape[-1]
 
         # auto manage shape of times, for odeint times
 
@@ -440,6 +463,12 @@ class VoiceBox(Module):
 
         if times.ndim == 1 and times.shape[0] == 1:
             times = repeat(times, '1 -> b', b = cond.shape[0])
+
+        # construct mask if not given
+
+        if not exists(mask):
+            frac_lengths = torch.zeros((batch,), device = self.device).float().uniform_(*self.frac_lengths_mask)
+            mask = mask_from_frac_lengths(seq_len, frac_lengths)
 
         # classifier free guidance
 
@@ -511,8 +540,7 @@ class ConditionalFlowMatcherWrapper(Module):
         ode_atol = 1e-5,
         ode_rtol = 1e-5,
         ode_method = 'dopri5',
-        cond_drop_prob = 0.,
-        prob_seq_drop = 0.3  # not entirely sure
+        cond_drop_prob = 0.
     ):
         super().__init__()
         self.sigma = sigma
@@ -520,7 +548,6 @@ class ConditionalFlowMatcherWrapper(Module):
         self.voicebox = voicebox
 
         self.cond_drop_prob = cond_drop_prob
-        self.prob_seq_drop = prob_seq_drop
 
         self.odeint_kwargs = dict(
             atol = ode_atol,
@@ -590,16 +617,6 @@ class ConditionalFlowMatcherWrapper(Module):
         w = (1 - (1 - σ) * t) * x0 + t * x1
 
         flow = x1 - (1 - σ) * x0
-
-        # construct mask if not given
-
-        if (
-            not exists(mask) and
-            exists(self.prob_seq_drop) and
-            self.prob_seq_drop > 0.
-        ):
-            frac_lengths = torch.full((batch,), self.prob_seq_drop, device = self.device)
-            mask = mask_from_frac_lengths(seq_len, frac_lengths)
 
         # predict
 
