@@ -96,3 +96,12 @@ sampled = cfm_wrapper.sample(
     year    = {2022}
 }
 ```
+
+```bibtex
+@misc{torchdiffeq,
+    author  = {Chen, Ricky T. Q.},
+    title   = {torchdiffeq},
+    year    = {2018},
+    url     = {https://github.com/rtqichen/torchdiffeq},
+}
+```
