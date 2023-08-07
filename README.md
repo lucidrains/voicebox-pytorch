@@ -37,7 +37,8 @@ model = VoiceBox(
 )
 
 cfm_wrapper = ConditionalFlowMatcherWrapper(
-    voicebox = model
+    voicebox = model,
+    use_torchode = False   # by default will use torchdiffeq with midpoint as in paper, but can use the promising torchode package too
 )
 
 x = torch.randn(2, 1024, 512)
@@ -104,5 +105,15 @@ sampled = cfm_wrapper.sample(
     title   = {torchdiffeq},
     year    = {2018},
     url     = {https://github.com/rtqichen/torchdiffeq},
+}
+```
+
+```bibtex
+@inproceedings{lienen2022torchode,
+  title     = {torchode: A Parallel {ODE} Solver for PyTorch},
+  author    = {Marten Lienen and Stephan G{\"u}nnemann},
+  booktitle = {The Symbiosis of Deep Learning and Differential Equations II, NeurIPS},
+  year      = {2022},
+  url       = {https://openreview.net/forum?id=uiKVKTiUYB0}
 }
 ```

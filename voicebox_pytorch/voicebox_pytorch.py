@@ -7,7 +7,6 @@ from torch.nn import Module
 import torch.nn.functional as F
 
 import torchode as to
-from torchode.single_step_methods import SingleStepMethod
 
 from torchdiffeq import odeint
 
@@ -562,7 +561,7 @@ class ConditionalFlowMatcherWrapper(Module):
         ode_step_size = 0.0625,
         use_torchode = False,
         torchdiffeq_ode_method = 'midpoint',                      # use midpoint for torchdiffeq, as in paper
-        torchode_method_klass: SingleStepMethod = to.Tsit5,      # use tsit5 for torchode, as torchode does not have midpoint (recommended by Bryan @b-chiang)
+        torchode_method_klass = to.Tsit5,      # use tsit5 for torchode, as torchode does not have midpoint (recommended by Bryan @b-chiang)
         cond_drop_prob = 0.
     ):
         super().__init__()
