@@ -1,4 +1,5 @@
 import math
+from functools import partial
 from random import random
 
 import torch
@@ -600,8 +601,9 @@ class ConditionalFlowMatcherWrapper(Module):
 
         self.voicebox.eval()
 
-        def fn(t, x):
-            x = x.reshape(*shape)
+        def fn(t, x, *, packed_shape = None):
+            if exists(packed_shape):
+                x, = unpack(x, packed_shape, 'b *')
 
             out = self.voicebox.forward_with_cond_scale(
                 x,
@@ -611,7 +613,10 @@ class ConditionalFlowMatcherWrapper(Module):
                 cond_scale = cond_scale
             )
 
-            return rearrange(out, 'b ... -> b (...)')
+            if exists(packed_shape):
+                out = rearrange(out, 'b ... -> b (...)')
+
+            return out
 
         y0 = torch.randn_like(cond)
         t = torch.linspace(0, 1, steps, device = self.device)
@@ -624,6 +629,11 @@ class ConditionalFlowMatcherWrapper(Module):
         else:
             print('sampling with torchode')
 
+            t = repeat(t, 'n -> b n', b = batch)
+            y0, packed_shape = pack([y0], 'b *')
+
+            fn = partial(fn, packed_shape = packed_shape)
+
             term = to.ODETerm(fn)
             step_method = self.torchode_method_klass(term = term)
 
@@ -635,9 +645,6 @@ class ConditionalFlowMatcherWrapper(Module):
 
             solver = to.AutoDiffAdjoint(step_method, step_size_controller)
             jit_solver = torch.compile(solver)
-
-            t = repeat(t, 'n -> b n', b = batch)
-            y0 = rearrange(y0, 'b ... -> b (...)')
 
             init_value = to.InitialValueProblem(y0 = y0, t_eval = t)
 
