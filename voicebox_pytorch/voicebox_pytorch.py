@@ -602,6 +602,8 @@ class ConditionalFlowMatcherWrapper(Module):
         y0 = torch.randn_like(cond)
         t = torch.linspace(0, 1, steps, device = self.device)
 
+        print('sampling')
+
         trajectory = odeint(fn, y0, t, adjoint_params=(), **self.odeint_kwargs)
 
         sampled = trajectory[-1] # last in trajectory
@@ -613,22 +615,15 @@ class ConditionalFlowMatcherWrapper(Module):
         *,
         phoneme_ids,
         cond,
-        mask = None,
-        use_torchcfm_impl = False
+        mask = None
     ):
         """
         following eq (5) (6) in https://arxiv.org/pdf/2306.15687.pdf
-        using https://github.com/atong01/conditional-flow-matching/blob/main/torchcfm/conditional_flow_matching.py as reference
         """
 
         batch, seq_len, dtype, σ = *x1.shape[:2], x1.dtype, self.sigma
 
         x0 = torch.randn_like(x1)
-
-        # a tiny difference between the paper and Alex Tong's torchcfm implementation, is that he uses a different sample gaussian noise for epsilon for calculating w
-        # not sure what is correct
-
-        to_eps = identity if not use_torchcfm_impl else torch.randn_like
 
         # random times
 
@@ -637,7 +632,7 @@ class ConditionalFlowMatcherWrapper(Module):
 
         # sample xt (w in the paper)
 
-        w = (1 - (1 - σ) * t) * to_eps(x0) + t * x1
+        w = (1 - (1 - σ) * t) * x0 + t * x1
 
         flow = x1 - (1 - σ) * x0
 
