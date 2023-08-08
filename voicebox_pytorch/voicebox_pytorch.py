@@ -38,6 +38,12 @@ def is_odd(n):
 def coin_flip():
     return random() < 0.5
 
+def pack_one(t, pattern):
+    return pack([t], pattern)
+
+def unpack_one(t, ps, pattern):
+    return unpack(t, ps, pattern)[0]
+
 # tensor helpers
 
 def prob_mask_like(shape, prob, device):
@@ -603,7 +609,7 @@ class ConditionalFlowMatcherWrapper(Module):
 
         def fn(t, x, *, packed_shape = None):
             if exists(packed_shape):
-                x, = unpack(x, packed_shape, 'b *')
+                x = unpack_one(x, packed_shape, 'b *')
 
             out = self.voicebox.forward_with_cond_scale(
                 x,
@@ -630,7 +636,7 @@ class ConditionalFlowMatcherWrapper(Module):
             print('sampling with torchode')
 
             t = repeat(t, 'n -> b n', b = batch)
-            y0, packed_shape = pack([y0], 'b *')
+            y0, packed_shape = pack_one(y0, 'b *')
 
             fn = partial(fn, packed_shape = packed_shape)
 
@@ -651,7 +657,7 @@ class ConditionalFlowMatcherWrapper(Module):
             sol = jit_solver.solve(init_value)
 
             sampled = sol.ys[:, -1]
-            sampled = sampled.reshape(*shape)
+            sampled = unpack_one(sampled, packed_shape, 'b *')
 
         return sampled
 
