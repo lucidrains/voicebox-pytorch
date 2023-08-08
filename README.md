@@ -10,6 +10,8 @@ In this work, we will use rotary embeddings. The authors seem unaware that ALiBi
 
 - <a href="https://stability.ai/">StabilityAI</a> for the generous sponsorship, as well as my other sponsors, for affording me the independence to open source artificial intelligence.
 
+- <a href="https://translated.com">Translated</a> for the generous grant to advance the state of open source text-to-speech solutions. This project was started and will be finished under this grant.
+
 - <a href="https://github.com/b-chiang">Bryan Chiang</a> for the ongoing code review, sharing his expertise on TTS, and pointing me to <a href="https://github.com/atong01/conditional-flow-matching">an open sourced implementation</a> of conditional flow matching
 
 ## Install
