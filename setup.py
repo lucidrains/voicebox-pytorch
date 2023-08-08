@@ -17,6 +17,7 @@ setup(
   ],
   install_requires=[
     'audiolm-pytorch',
+    'naturalspeech2-pytorch',
     'beartype',
     'einops>=0.6.1',
     'torch>=2.0',

@@ -17,7 +17,7 @@ from beartype.typing import Tuple
 from einops import rearrange, repeat, reduce, pack, unpack
 
 from voicebox_pytorch.attend import Attend
-from voicebox_pytorch.aligner import Aligner, ForwardSumLoss, maximum_path
+from naturalspeech2_pytorch.aligner import Aligner, ForwardSumLoss, maximum_path
 # helper functions
 
 def exists(val):
