@@ -14,6 +14,8 @@ In this work, we will use rotary embeddings. The authors seem unaware that ALiBi
 
 - <a href="https://github.com/b-chiang">Bryan Chiang</a> for the ongoing code review, sharing his expertise on TTS, and pointing me to <a href="https://github.com/atong01/conditional-flow-matching">an open sourced implementation</a> of conditional flow matching
 
+- <a href="https://github.com/manmay-nakhashi">Manmay</a> for getting the repository started with the alignment code
+
 ## Install
 
 ```bash

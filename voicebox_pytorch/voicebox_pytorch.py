@@ -3,7 +3,7 @@ from functools import partial
 from random import random
 
 import torch
-from torch import nn, Tensor, einsum
+from torch import nn, Tensor, einsum, IntTensor, FloatTensor, BoolTensor
 from torch.nn import Module
 import torch.nn.functional as F
 
@@ -349,10 +349,7 @@ class DurationPredictor(Module):
             kernel_size = conv_pos_embed_kernel_size,
             groups = conv_pos_embed_groups
         )
-        # if we are using mel spec with 80 channels, we need to set attn_channels to 80
-        # dim_in assuming we have spec with 80 channels
-        self.aligner = Aligner(dim_hidden = dim_phoneme_emb, **aligner_kwargs)
-        self.align_loss = ForwardSumLoss()
+
         self.transformer = Transformer(
             dim = dim,
             depth = depth,
@@ -366,6 +363,13 @@ class DurationPredictor(Module):
             nn.Linear(dim, 1),
             Rearrange('... 1 -> ...')
         )
+
+        # aligner related
+
+        # if we are using mel spec with 80 channels, we need to set attn_channels to 80
+        # dim_in assuming we have spec with 80 channels
+        self.aligner = Aligner(dim_hidden = dim_phoneme_emb, **aligner_kwargs)
+        self.align_loss = ForwardSumLoss()
 
     @property
     def device(self):
@@ -385,21 +389,23 @@ class DurationPredictor(Module):
 
         null_logits = self.forward(*args, cond_drop_prob = 1., **kwargs)
         return null_logits + (logits - null_logits) * cond_scale
+
+    @beartype
     def forward_aligner(
-        self, x: torch.FloatTensor, x_mask: torch.IntTensor, y: torch.FloatTensor, y_mask: torch.IntTensor
+        self,
+        x: FloatTensor,     # (b, t, c)
+        x_mask: IntTensor,  # (b, 1, t)
+        y: FloatTensor,     # (b, t, c)
+        y_mask: IntTensor   # (b, 1, t)
     ):
         """
-        Inputs Shapes:
-            - x: `[B, T, C]`
-            - x_mask: `[B, 1, T]`
-            - y: `[B, T, C]`
-            - y_mask: `[B, 1, T]`
         Output Shapes:
             - alignment_hard: `[B, T]`
             - alignment_soft: `[B, T_x, T_y]`
             - alignment_logprob: `[B, 1, T_y, T_x]`
             - alignment_mas: `[B, T_x, T_y]`
         """
+
         attn_mask = rearrange(x_mask, 'b 1 t -> b 1 t 1') * rearrange(y_mask, 'b 1 t -> b 1 1 t')
         alignment_soft, alignment_logprob = self.aligner(rearrange(y, 'b t c -> b c t'), x, x_mask)
         assert not torch.isnan(alignment_soft).any()
@@ -409,6 +415,7 @@ class DurationPredictor(Module):
         alignment_hard = torch.sum(alignment_mas, -1).float()
         alignment_soft = rearrange(alignment_soft, 'b 1 t1 t2 -> b t2 t1')
         return alignment_hard, alignment_soft, alignment_logprob, alignment_mas
+
     def forward(
         self,
         x,
@@ -418,7 +425,11 @@ class DurationPredictor(Module):
         cond,
         cond_drop_prob = 0.,
         target = None,
-        mask = None
+        mask = None,
+        phoneme_len = None,
+        mel_len = None,
+        phoneme_mask = None,
+        mel_mask = None,
     ):
         batch, seq_len, cond_dim = cond.shape
         assert cond_dim == x.shape[-1]
@@ -448,18 +459,20 @@ class DurationPredictor(Module):
                 self.null_phoneme_id,
                 phoneme_ids
             )
-        #[TODO] create mask for aligner here
-        phoneme_len=None
-        mel_len=None
-        phoneme_mask=None
-        mel_mask=None
-        # aligner
+
         phoneme_emb = self.to_phoneme_emb(phoneme_ids)
-        alignment_hard, _, alignment_logprob, _ = self.forward_aligner(phoneme_emb, phoneme_mask, mel, mel_mask)
+
+        # aligner
         # use alignment_hard to oversample phonemes
         # Duration Predictor should predict the duration of unmasked phonemes where target is masked alignment_hard
 
+        should_align = all([exists(el) for el in (phoneme_len, mel_len, phoneme_mask, mel_mask)])
+
+        if should_align:
+            alignment_hard, _, alignment_logprob, _ = self.forward_aligner(phoneme_emb, phoneme_mask, mel, mel_mask)
+
         # combine audio, phoneme, conditioning
+
         embed = torch.cat((x, phoneme_emb, cond), dim = -1)
         x = self.to_embed(embed)
 
@@ -485,8 +498,14 @@ class DurationPredictor(Module):
         loss = num / den
         loss = loss.mean()
         
+        if not should_align:
+            return loss
+
         #aligner loss
-        loss = loss + self.align_loss(alignment_logprob, phoneme_len, mel_len)
+
+        align_loss = self.align_loss(alignment_logprob, phoneme_len, mel_len)
+        loss = loss + align_loss
+
         return loss
 
 
