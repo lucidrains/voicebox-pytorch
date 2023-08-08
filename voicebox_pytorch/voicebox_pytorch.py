@@ -17,7 +17,7 @@ from beartype.typing import Tuple
 from einops import rearrange, repeat, reduce, pack, unpack
 
 from voicebox_pytorch.attend import Attend
-
+from voicebox_pytorch.aligner import Aligner, ForwardSumLoss, maximum_path
 # helper functions
 
 def exists(val):
@@ -295,7 +295,10 @@ class DurationPredictor(Module):
             kernel_size = conv_pos_embed_kernel_size,
             groups = conv_pos_embed_groups
         )
-
+        # if we are using mel spec with 80 channels, we need to set attn_channels to 80
+        # dim_in assuming we have spec with 80 channels
+        self.aligner = Aligner(dim_in = 80, dim_hidden = dim_phoneme_emb, attn_channels = 80)
+        self.align_loss = ForwardSumLoss()
         self.transformer = Transformer(
             dim = dim,
             depth = depth,
@@ -328,12 +331,36 @@ class DurationPredictor(Module):
 
         null_logits = self.forward(*args, cond_drop_prob = 1., **kwargs)
         return null_logits + (logits - null_logits) * cond_scale
-
+    def forward_aligner(
+        self, x: torch.FloatTensor, x_mask: torch.IntTensor, y: torch.FloatTensor, y_mask: torch.IntTensor
+    ):
+        """
+        Inputs Shapes:
+            - x: `[B, T, C]`
+            - x_mask: `[B, 1, T]`
+            - y: `[B, T, C]`
+            - y_mask: `[B, 1, T]`
+        Output Shapes:
+            - alignment_hard: `[B, T]`
+            - alignment_soft: `[B, T_x, T_y]`
+            - alignment_logprob: `[B, 1, T_y, T_x]`
+            - alignment_mas: `[B, T_x, T_y]`
+        """
+        attn_mask = rearrange(x_mask, 'b 1 t -> b 1 t 1') * rearrange(y_mask, 'b 1 t -> b 1 1 t')
+        alignment_soft, alignment_logprob = self.aligner(rearrange(y, 'b t c -> b c t'), x, x_mask)
+        assert not torch.isnan(alignment_soft).any()
+        alignment_mas = maximum_path(
+            rearrange(alignment_soft, 'b 1 t1 t2 -> b t2 t1').contiguous(), attn_mask.squeeze(1).contiguous()
+        )
+        alignment_hard = torch.sum(alignment_mas, -1).float()
+        alignment_soft = rearrange(alignment_soft, 'b 1 t1 t2 -> b t2 t1')
+        return alignment_hard, alignment_soft, alignment_logprob, alignment_mas
     def forward(
         self,
         x,
         *,
         phoneme_ids,
+        mel,
         cond,
         cond_drop_prob = 0.,
         target = None,
@@ -367,11 +394,18 @@ class DurationPredictor(Module):
                 self.null_phoneme_id,
                 phoneme_ids
             )
-
+        #[TODO] create mask for aligner here
+        phoneme_len=None
+        mel_len=None
+        phoneme_mask=None
+        mel_mask=None
+        # aligner
         phoneme_emb = self.to_phoneme_emb(phoneme_ids)
+        alignment_hard, _, alignment_logprob, _ = self.forward_aligner(phoneme_emb, phoneme_mask, mel, mel_mask)
+        # use alignment_hard to oversample phonemes
+        # Duration Predictor should predict the duration of unmasked phonemes where target is masked alignment_hard
 
         # combine audio, phoneme, conditioning
-
         embed = torch.cat((x, phoneme_emb, cond), dim = -1)
         x = self.to_embed(embed)
 
@@ -389,8 +423,11 @@ class DurationPredictor(Module):
         num = reduce(loss, 'b n -> b', 'sum')
         den = mask.sum(dim = -1).clamp(min = 1e-5)
         loss = num / den
-
-        return loss.mean()
+        loss.mean()
+        
+        #aligner loss
+        loss += self.align_loss(alignment_logprob, phoneme_len, mel_len)
+        return loss
 
 
 class VoiceBox(Module):
