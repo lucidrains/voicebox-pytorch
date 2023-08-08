@@ -14,6 +14,7 @@ from torchdiffeq import odeint
 from beartype import beartype
 from beartype.typing import Tuple
 
+from einops.layers.torch import Rearrange
 from einops import rearrange, repeat, reduce, pack, unpack
 
 from voicebox_pytorch.attend import Attend
@@ -157,13 +158,45 @@ class ConvPositionEmbed(Module):
 # norms
 
 class RMSNorm(Module):
-    def __init__(self, dim):
+    def __init__(
+        self,
+        dim
+    ):
         super().__init__()
         self.scale = dim ** 0.5
         self.gamma = nn.Parameter(torch.ones(dim))
 
     def forward(self, x):
         return F.normalize(x, dim = -1) * self.scale * self.gamma
+
+class AdaptiveRMSNorm(Module):
+    def __init__(
+        self,
+        dim,
+        cond_dim = None
+    ):
+        super().__init__()
+        cond_dim = default(cond_dim, dim)
+        self.scale = dim ** 0.5
+
+        self.to_gamma = nn.Linear(cond_dim, dim)
+        self.to_beta = nn.Linear(cond_dim, dim)
+
+        # init to identity
+
+        nn.init.zeros_(self.to_gamma.weight)
+        nn.init.ones_(self.to_gamma.bias)
+
+        nn.init.zeros_(self.to_beta.weight)
+        nn.init.zeros_(self.to_beta.bias)
+
+    def forward(self, x, *, cond):
+        normed = F.normalize(x, dim = -1) * self.scale
+
+        gamma, beta = self.to_gamma(cond), self.to_beta(cond)
+        gamma, beta = map(lambda t: rearrange(t, 'b d -> b 1 d'), (gamma, beta))
+
+        return normed * gamma + beta
 
 # attention
 
@@ -181,15 +214,11 @@ class Attention(Module):
         dim_inner = dim_head * heads
 
         self.attend = Attend(flash = flash)
-
-        self.norm = RMSNorm(dim)
         self.to_qkv = nn.Linear(dim, dim_inner * 3, bias = False)
         self.to_out = nn.Linear(dim_inner, dim, bias = False)
 
     def forward(self, x, mask = None, rotary_emb = None):
         h = self.heads
-
-        x = self.norm(x)
 
         q, k, v = self.to_qkv(x).chunk(3, dim = -1)
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = h), (q, k, v))
@@ -206,7 +235,6 @@ class Attention(Module):
 
 def FeedForward(dim, mult = 4):
     return nn.Sequential(
-        RMSNorm(dim),
         nn.Linear(dim, dim * mult),
         nn.GELU(),
         nn.Linear(dim * mult, dim)
@@ -223,14 +251,20 @@ class Transformer(Module):
         dim_head = 64,
         heads = 8,
         ff_mult = 4,
-        attn_flash = False
+        attn_flash = False,
+        adaptive_rmsnorm = False,
+        adaptive_rmsnorm_cond_dim_in = None
     ):
         super().__init__()
         assert divisible_by(depth, 2)
-
         self.layers = nn.ModuleList([])
 
         self.rotary_emb = RotaryEmbedding(dim = dim_head)
+
+        if adaptive_rmsnorm:
+            rmsnorm_klass = partial(AdaptiveRMSNorm, cond_dim = adaptive_rmsnorm_cond_dim_in)
+        else:
+            rmsnorm_klass = RMSNorm
 
         for ind in range(depth):
             layer = ind + 1
@@ -238,18 +272,28 @@ class Transformer(Module):
 
             self.layers.append(nn.ModuleList([
                 nn.Linear(dim * 2, dim) if has_skip else None,
+                rmsnorm_klass(dim = dim),
                 Attention(dim = dim, dim_head = dim_head, heads = heads, flash = attn_flash),
+                rmsnorm_klass(dim = dim),
                 FeedForward(dim = dim, mult = ff_mult)
             ]))
 
         self.final_norm = RMSNorm(dim)
 
-    def forward(self, x):
+    def forward(
+        self,
+        x,
+        adaptive_rmsnorm_cond = None
+    ):
         skip_connects = []
 
         rotary_emb = self.rotary_emb(x.shape[-2])
 
-        for skip_combiner, attn, ff in self.layers:
+        rmsnorm_kwargs = dict()
+        if exists(adaptive_rmsnorm_cond):
+            rmsnorm_kwargs = dict(cond = adaptive_rmsnorm_cond)
+
+        for skip_combiner, attn_prenorm, attn, ff_prenorm, ff in self.layers:
 
             # in the paper, they use a u-net like skip connection
             # unclear how much this helps, as no ablations or further numbers given besides a brief one-two sentence mention
@@ -260,8 +304,11 @@ class Transformer(Module):
                 x = torch.cat((x, skip_connects.pop()), dim = -1)
                 x = skip_combiner(x)
 
-            x = attn(x, rotary_emb = rotary_emb) + x
-            x = ff(x) + x
+            attn_input = attn_prenorm(x, **rmsnorm_kwargs)
+            x = attn(attn_input, rotary_emb = rotary_emb) + x
+
+            ff_input = ff_prenorm(x, **rmsnorm_kwargs) 
+            x = ff(ff_input) + x
 
         return self.final_norm(x)
 
@@ -382,7 +429,13 @@ class DurationPredictor(Module):
         x = self.to_embed(embed)
 
         x = self.conv_embed(x) + x
+
         x = self.transformer(x)
+
+        x = self.to_pred(x)
+
+        if not exists(target):
+            return x
 
         if not exists(mask):
             return F.l1_loss(x, target)
@@ -410,6 +463,7 @@ class VoiceBox(Module):
         dim_head = 64,
         heads = 16,
         ff_mult = 4,
+        time_hidden_dim = None,
         conv_pos_embed_kernel_size = 31,
         conv_pos_embed_groups = None,
         attn_flash = False,
@@ -417,7 +471,13 @@ class VoiceBox(Module):
         frac_lengths_mask: Tuple[float, float] = (0.7, 1.)
     ):
         super().__init__()
-        self.sinu_pos_emb = LearnedSinusoidalPosEmb(dim)
+        time_hidden_dim = default(time_hidden_dim, dim * 4)
+
+        self.sinu_pos_emb = nn.Sequential(
+            LearnedSinusoidalPosEmb(dim),
+            nn.Linear(dim, time_hidden_dim),
+            nn.SiLU()
+        )
 
         self.null_phoneme_id = num_phoneme_tokens # use last phoneme token as null token for CFG
         self.to_phoneme_emb = nn.Embedding(num_phoneme_tokens + 1, dim_phoneme_emb)
@@ -441,7 +501,9 @@ class VoiceBox(Module):
             dim_head = dim_head,
             heads = heads,
             ff_mult = ff_mult,
-            attn_flash = attn_flash
+            attn_flash = attn_flash,
+            adaptive_rmsnorm = True,
+            adaptive_rmsnorm_cond_dim_in = time_hidden_dim
         )
 
         self.to_pred = nn.Linear(dim, dim, bias = False)
@@ -519,20 +581,13 @@ class VoiceBox(Module):
 
         x = self.conv_embed(x) + x
 
-        # add sinusoidal time embedding along time axis
-
         time_emb = self.sinu_pos_emb(times)
-        x, ps = pack((time_emb, x), 'b * d')
 
         # attend
 
-        x = self.transformer(x)
+        x = self.transformer(x, adaptive_rmsnorm_cond = time_emb)
 
         x = self.to_pred(x)
-
-        # split out time embedding
-
-        _, x = unpack(x, ps, 'b * d')
 
         # if no target passed in, just return logits
 
@@ -567,7 +622,7 @@ class ConditionalFlowMatcherWrapper(Module):
         ode_rtol = 1e-5,
         ode_step_size = 0.0625,
         use_torchode = False,
-        torchdiffeq_ode_method = 'midpoint',                      # use midpoint for torchdiffeq, as in paper
+        torchdiffeq_ode_method = 'midpoint',   # use midpoint for torchdiffeq, as in paper
         torchode_method_klass = to.Tsit5,      # use tsit5 for torchode, as torchode does not have midpoint (recommended by Bryan @b-chiang)
         cond_drop_prob = 0.
     ):

@@ -74,8 +74,8 @@ sampled = cfm_wrapper.sample(
 - [x] get basic mask generation logic with the p_drop of 0.2-0.3 for ICL
 - [x] take care of p_drop, different between voicebox and duration model
 - [x] support torchdiffeq and torchode
+- [x] switch to adaptive rmsnorm for time conditioning
 
-- [ ] consider switching to adaptive rmsnorm for time conditioning
 - [ ] integrate with either hifi-gan and soundstream / encodec
 - [ ] basic trainer
 
