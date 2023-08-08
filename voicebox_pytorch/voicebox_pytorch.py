@@ -276,7 +276,8 @@ class DurationPredictor(Module):
         conv_pos_embed_groups = None,
         attn_flash = False,
         p_drop_prob = 0.2, # p_drop in paper
-        frac_lengths_mask: Tuple[float, float] = (0.1, 1.)
+        frac_lengths_mask: Tuple[float, float] = (0.1, 1.),
+        aligner_kwargs: dict = dict(dim_in = 80, attn_channels = 80)
     ):
         super().__init__()
 
@@ -297,7 +298,7 @@ class DurationPredictor(Module):
         )
         # if we are using mel spec with 80 channels, we need to set attn_channels to 80
         # dim_in assuming we have spec with 80 channels
-        self.aligner = Aligner(dim_in = 80, dim_hidden = dim_phoneme_emb, attn_channels = 80)
+        self.aligner = Aligner(dim_hidden = dim_phoneme_emb, **aligner_kwargs)
         self.align_loss = ForwardSumLoss()
         self.transformer = Transformer(
             dim = dim,
@@ -350,7 +351,7 @@ class DurationPredictor(Module):
         alignment_soft, alignment_logprob = self.aligner(rearrange(y, 'b t c -> b c t'), x, x_mask)
         assert not torch.isnan(alignment_soft).any()
         alignment_mas = maximum_path(
-            rearrange(alignment_soft, 'b 1 t1 t2 -> b t2 t1').contiguous(), attn_mask.squeeze(1).contiguous()
+            rearrange(alignment_soft, 'b 1 t1 t2 -> b t2 t1').contiguous(), rearrange(attn_mask, 'b 1 t1 t2 -> b t1 t2').contiguous()
         )
         alignment_hard = torch.sum(alignment_mas, -1).float()
         alignment_soft = rearrange(alignment_soft, 'b 1 t1 t2 -> b t2 t1')
@@ -423,10 +424,10 @@ class DurationPredictor(Module):
         num = reduce(loss, 'b n -> b', 'sum')
         den = mask.sum(dim = -1).clamp(min = 1e-5)
         loss = num / den
-        loss.mean()
+        loss = loss.mean()
         
         #aligner loss
-        loss += self.align_loss(alignment_logprob, phoneme_len, mel_len)
+        loss = loss + self.align_loss(alignment_logprob, phoneme_len, mel_len)
         return loss
 
 
