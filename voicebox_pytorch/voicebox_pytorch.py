@@ -1,6 +1,6 @@
 import math
-from functools import partial
 from random import random
+from functools import partial
 
 import torch
 from torch import nn, Tensor, einsum, IntTensor, FloatTensor, BoolTensor
@@ -12,13 +12,19 @@ import torchode as to
 from torchdiffeq import odeint
 
 from beartype import beartype
-from beartype.typing import Tuple
+from beartype.typing import Tuple, Optional
 
 from einops.layers.torch import Rearrange
 from einops import rearrange, repeat, reduce, pack, unpack
 
 from voicebox_pytorch.attend import Attend
+
 from naturalspeech2_pytorch.aligner import Aligner, ForwardSumLoss, maximum_path
+
+from audiolm_pytorch import EncodecWrapper
+
+from vocos import Vocos
+
 # helper functions
 
 def exists(val):
@@ -312,6 +318,44 @@ class Transformer(Module):
 
         return self.final_norm(x)
 
+# encoder decoders
+
+class AudioEncoderDecoder(nn.Module):
+    pass
+
+class EncodecVoco(AudioEncoderDecoder):
+    def __init__(
+        self,
+        *,
+        pretrained_vocos_path = 'charactr/vocos-encodec-24khz',
+        bandwidth_id = 2
+    ):
+        super().__init__()
+        self.encodec = EncodecWrapper()
+        self.vocos = Vocos.from_pretrained(pretrained_vocos_path)
+
+        self.register_buffer('bandwidth_id', torch.tensor([bandwidth_id]))
+
+    @property
+    def latent_dim(self):
+        return self.encodec.codebook_dim
+
+    def encode(self, audio):
+        encoded_audio, _, _ = self.encodec(audio, return_encoded = True)
+        return encoded_audio
+
+    def decode(self, latents):
+        _, codes, _ = self.encodec.rq(latents)
+        codes = rearrange(codes, 'b n q -> b q n')
+
+        all_audios = []
+        for code in codes:
+            features = self.vocos.codes_to_features(code)
+            audio = self.vocos.decode(features, bandwidth_id = self.bandwidth_id)
+            all_audios.append(audio)
+
+        return torch.stack(all_audios)
+
 # both duration and main denoising model are transformers
 
 class DurationPredictor(Module):
@@ -514,6 +558,7 @@ class VoiceBox(Module):
         self,
         *,
         num_phoneme_tokens,
+        audio_enc_dec: Optional[AudioEncoderDecoder] = None,
         dim_phoneme_emb = 1024,
         dim = 1024,
         depth = 24,
@@ -529,6 +574,8 @@ class VoiceBox(Module):
     ):
         super().__init__()
         time_hidden_dim = default(time_hidden_dim, dim * 4)
+
+        self.audio_enc_dec = audio_enc_dec
 
         self.sinu_pos_emb = nn.Sequential(
             LearnedSinusoidalPosEmb(dim),

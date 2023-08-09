@@ -114,10 +114,19 @@ sampled = cfm_wrapper.sample(
 
 ```bibtex
 @inproceedings{lienen2022torchode,
-  title     = {torchode: A Parallel {ODE} Solver for PyTorch},
-  author    = {Marten Lienen and Stephan G{\"u}nnemann},
-  booktitle = {The Symbiosis of Deep Learning and Differential Equations II, NeurIPS},
-  year      = {2022},
-  url       = {https://openreview.net/forum?id=uiKVKTiUYB0}
+    title     = {torchode: A Parallel {ODE} Solver for PyTorch},
+    author    = {Marten Lienen and Stephan G{\"u}nnemann},
+    booktitle = {The Symbiosis of Deep Learning and Differential Equations II, NeurIPS},
+    year      = {2022},
+    url       = {https://openreview.net/forum?id=uiKVKTiUYB0}
+}
+```
+
+```bibtex
+@article{siuzdak2023vocos,
+    title   = {Vocos: Closing the gap between time-domain and Fourier-based neural vocoders for high-quality audio synthesis},
+    author  = {Siuzdak, Hubert},
+    journal = {arXiv preprint arXiv:2306.00814},
+    year    = {2023}
 }
 ```
