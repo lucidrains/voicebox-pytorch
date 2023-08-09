@@ -77,7 +77,10 @@ sampled = cfm_wrapper.sample(
 - [x] take care of p_drop, different between voicebox and duration model
 - [x] support torchdiffeq and torchode
 - [x] switch to adaptive rmsnorm for time conditioning
+- [x] add encodec / voco for starters
 
+- [ ] setup training and sampling with raw audio, if `audio_enc_dec` is passed in
+- [ ] calculate how many seconds corresponds to each frame and add as property on `AudioEncoderDecoder` - when sampling, allow for specifying in seconds
 - [ ] integrate with either hifi-gan and soundstream / encodec
 - [ ] basic trainer
 
