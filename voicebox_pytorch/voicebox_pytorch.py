@@ -363,6 +363,7 @@ class DurationPredictor(Module):
         self,
         *,
         num_phoneme_tokens,
+        audio_enc_dec: Optional[AudioEncoderDecoder] = None,
         dim_phoneme_emb = 512,
         dim = 512,
         depth = 10,
@@ -377,6 +378,13 @@ class DurationPredictor(Module):
         aligner_kwargs: dict = dict(dim_in = 80, attn_channels = 80)
     ):
         super().__init__()
+
+        self.audio_enc_dec = audio_enc_dec
+
+        if exists(audio_enc_dec) and dim != audio_enc_dec.latent_dim:
+            self.proj_in = nn.Linear(audio_enc_dec.latent_dim, dim)
+        else:
+            self.proj_in = nn.Identity()
 
         self.null_phoneme_id = num_phoneme_tokens # use last phoneme token as null token for CFG
         self.to_phoneme_emb = nn.Embedding(num_phoneme_tokens + 1, dim_phoneme_emb)
@@ -412,6 +420,7 @@ class DurationPredictor(Module):
 
         # if we are using mel spec with 80 channels, we need to set attn_channels to 80
         # dim_in assuming we have spec with 80 channels
+
         self.aligner = Aligner(dim_hidden = dim_phoneme_emb, **aligner_kwargs)
         self.align_loss = ForwardSumLoss()
 
@@ -441,21 +450,22 @@ class DurationPredictor(Module):
         x_mask: IntTensor,  # (b, 1, t)
         y: FloatTensor,     # (b, t, c)
         y_mask: IntTensor   # (b, 1, t)
-    ):
-        """
-        Output Shapes:
-            - alignment_hard: `[B, T]`
-            - alignment_soft: `[B, T_x, T_y]`
-            - alignment_logprob: `[B, 1, T_y, T_x]`
-            - alignment_mas: `[B, T_x, T_y]`
-        """
-
+    ) -> Tuple[
+        FloatTensor,        # alignment_hard: (b, t)
+        FloatTensor,        # alignment_soft: (b, tx, ty)
+        FloatTensor,        # alignment_logprob: (b, 1, ty, tx)
+        BoolTensor          # alignment_mas: (b, tx, ty)
+    ]:
         attn_mask = rearrange(x_mask, 'b 1 t -> b 1 t 1') * rearrange(y_mask, 'b 1 t -> b 1 1 t')
         alignment_soft, alignment_logprob = self.aligner(rearrange(y, 'b t c -> b c t'), x, x_mask)
+
         assert not torch.isnan(alignment_soft).any()
+
         alignment_mas = maximum_path(
-            rearrange(alignment_soft, 'b 1 t1 t2 -> b t2 t1').contiguous(), rearrange(attn_mask, 'b 1 t1 t2 -> b t1 t2').contiguous()
+            rearrange(alignment_soft, 'b 1 t1 t2 -> b t2 t1').contiguous(),
+            rearrange(attn_mask, 'b 1 t1 t2 -> b t1 t2').contiguous()
         )
+
         alignment_hard = torch.sum(alignment_mas, -1).float()
         alignment_soft = rearrange(alignment_soft, 'b 1 t1 t2 -> b t2 t1')
         return alignment_hard, alignment_soft, alignment_logprob, alignment_mas
@@ -477,6 +487,8 @@ class DurationPredictor(Module):
     ):
         batch, seq_len, cond_dim = cond.shape
         assert cond_dim == x.shape[-1]
+
+        x, cond = map(self.proj_in, (x, cond))
 
         # construct mask if not given
 
@@ -552,7 +564,6 @@ class DurationPredictor(Module):
 
         return loss
 
-
 class VoiceBox(Module):
     def __init__(
         self,
@@ -576,6 +587,11 @@ class VoiceBox(Module):
         time_hidden_dim = default(time_hidden_dim, dim * 4)
 
         self.audio_enc_dec = audio_enc_dec
+
+        if exists(audio_enc_dec) and dim != audio_enc_dec.latent_dim:
+            self.proj_in = nn.Linear(audio_enc_dec.latent_dim, dim)
+        else:
+            self.proj_in = nn.Identity()
 
         self.sinu_pos_emb = nn.Sequential(
             LearnedSinusoidalPosEmb(dim),
@@ -610,7 +626,9 @@ class VoiceBox(Module):
             adaptive_rmsnorm_cond_dim_in = time_hidden_dim
         )
 
-        self.to_pred = nn.Linear(dim, dim, bias = False)
+        dim_out = audio_enc_dec.latent_dim if exists(audio_enc_dec) else dim
+
+        self.to_pred = nn.Linear(dim, dim_out, bias = False)
 
     @property
     def device(self):
@@ -644,6 +662,10 @@ class VoiceBox(Module):
     ):
         batch, seq_len, cond_dim = cond.shape
         assert cond_dim == x.shape[-1]
+
+        # project in, in case codebook dim is not equal to model dimensions
+
+        x, cond = map(self.proj_in, (x, cond))
 
         # auto manage shape of times, for odeint times
 
