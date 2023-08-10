@@ -545,7 +545,7 @@ class DurationPredictor(Module):
             return F.l1_loss(x, target)
 
         loss = F.l1_loss(x, target, reduction = 'none')
-        loss = loss.masked_fill(mask, 0.)
+        loss = loss.masked_fill(~mask, 0.)
 
         # masked mean
 
@@ -726,7 +726,7 @@ class VoiceBox(Module):
         loss = F.mse_loss(x, target, reduction = 'none')
 
         loss = reduce(loss, 'b n d -> b n', 'mean')
-        loss = loss.masked_fill(mask, 0.)
+        loss = loss.masked_fill(~mask, 0.)
 
         # masked mean
 
