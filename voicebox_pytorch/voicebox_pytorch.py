@@ -738,6 +738,9 @@ class VoiceBox(Module):
 
 # wrapper for the CNF
 
+def is_probably_audio_from_shape(t):
+    return t.ndim == 2 or (t.ndim == 3 and t.shape[1] == 1)
+
 class ConditionalFlowMatcherWrapper(Module):
     @beartype
     def __init__(
@@ -781,10 +784,21 @@ class ConditionalFlowMatcherWrapper(Module):
         cond,
         mask = None,
         steps = 3,
-        cond_scale = 1.
+        cond_scale = 1.,
+        decode_to_audio = True
     ):
         shape = cond.shape
         batch = shape[0]
+
+        # take care of condition as raw audio
+
+        cond_is_raw_audio = is_probably_audio_from_shape(cond)
+
+        if cond_is_raw_audio:
+            assert exists(self.voicebox.audio_enc_dec)
+
+            self.voicebox.audio_enc_dec.eval()
+            cond = self.voicebox.audio_enc_dec.encode(cond)
 
         self.voicebox.eval()
 
@@ -840,7 +854,10 @@ class ConditionalFlowMatcherWrapper(Module):
             sampled = sol.ys[:, -1]
             sampled = unpack_one(sampled, packed_shape, 'b *')
 
-        return sampled
+        if not decode_to_audio or not exists(self.voicebox.audio_enc_dec):
+            return sampled
+
+        return self.voicebox.audio_enc_dec.decode(sampled)
 
     def forward(
         self,
@@ -855,6 +872,24 @@ class ConditionalFlowMatcherWrapper(Module):
         """
 
         batch, seq_len, dtype, σ = *x1.shape[:2], x1.dtype, self.sigma
+
+        # if raw audio is given, convert if audio encoder / decoder was passed in
+
+        input_is_raw_audio, cond_is_raw_audio = map(is_probably_audio_from_shape, (x1, cond))
+
+        if any([input_is_raw_audio, cond_is_raw_audio]):
+            assert exists(self.voicebox.audio_enc_dec), 'audio_enc_dec must be set on VoiceBox to train directly on raw audio'
+
+            with torch.no_grad():
+                self.voicebox.audio_enc_dec.eval()
+
+                if input_is_raw_audio:
+                    x1 = self.voicebox.audio_enc_dec.encode(x1)
+
+                if cond_is_raw_audio:
+                    cond = self.voicebox.audio_enc_dec.encode(cond)
+
+        # x0 is gaussian noise
 
         x0 = torch.randn_like(x1)
 
