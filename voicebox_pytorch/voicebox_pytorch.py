@@ -570,7 +570,7 @@ class VoiceBox(Module):
         *,
         num_phoneme_tokens,
         audio_enc_dec: Optional[AudioEncoderDecoder] = None,
-        dim_in=80,
+        dim_in = None,
         dim_phoneme_emb = 1024,
         dim = 1024,
         depth = 24,
@@ -585,6 +585,8 @@ class VoiceBox(Module):
         frac_lengths_mask: Tuple[float, float] = (0.7, 1.)
     ):
         super().__init__()
+        dim_in = default(dim_in, dim)
+
         time_hidden_dim = default(time_hidden_dim, dim * 4)
 
         self.audio_enc_dec = audio_enc_dec
