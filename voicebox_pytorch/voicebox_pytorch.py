@@ -570,6 +570,7 @@ class VoiceBox(Module):
         *,
         num_phoneme_tokens,
         audio_enc_dec: Optional[AudioEncoderDecoder] = None,
+        dim_in=80,
         dim_phoneme_emb = 1024,
         dim = 1024,
         depth = 24,
@@ -605,7 +606,7 @@ class VoiceBox(Module):
         self.p_drop_prob = p_drop_prob
         self.frac_lengths_mask = frac_lengths_mask
 
-        self.to_embed = nn.Linear(dim * 2 + dim_phoneme_emb, dim)
+        self.to_embed = nn.Linear(dim_in * 2 + dim_phoneme_emb, dim)
 
         self.null_cond = nn.Parameter(torch.zeros(dim))
 
@@ -626,7 +627,7 @@ class VoiceBox(Module):
             adaptive_rmsnorm_cond_dim_in = time_hidden_dim
         )
 
-        dim_out = audio_enc_dec.latent_dim if exists(audio_enc_dec) else dim
+        dim_out = audio_enc_dec.latent_dim if exists(audio_enc_dec) else dim_in
 
         self.to_pred = nn.Linear(dim, dim_out, bias = False)
 
