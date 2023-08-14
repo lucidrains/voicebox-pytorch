@@ -23,6 +23,9 @@ from naturalspeech2_pytorch.aligner import Aligner, ForwardSumLoss, maximum_path
 
 from audiolm_pytorch import EncodecWrapper
 
+import torchaudio.transforms as T
+from torchaudio.functional import DB_to_amplitude
+
 from vocos import Vocos
 
 # helper functions
@@ -322,6 +325,67 @@ class Transformer(Module):
 
 class AudioEncoderDecoder(nn.Module):
     pass
+
+class MelVoco(AudioEncoderDecoder):
+    def __init__(
+        self,
+        *,
+        log = True,
+        n_mels = 100,
+        sampling_rate = 24000,
+        f_max = 8000,
+        n_fft = 1024,
+        win_length = 640,
+        hop_length = 160,
+        pretrained_vocos_path = 'charactr/vocos-mel-24khz'
+    ):
+        super().__init__()
+        self.log = log
+        self.n_mels = n_mels
+        self.n_fft = n_fft
+        self.f_max = f_max
+        self.win_length = win_length
+        self.hop_length = hop_length
+        self.sampling_rate = sampling_rate
+
+        self.vocos = Vocos.from_pretrained(pretrained_vocos_path)
+
+    @property
+    def latent_dim(self):
+        return self.num_mels
+
+    def encode(self, audio):
+        stft_transform = T.Spectrogram(
+            n_fft = self.n_fft,
+            win_length = self.win_length,
+            hop_length = self.hop_length,
+            window_fn = torch.hann_window
+        )
+
+        spectrogram = stft_transform(audio)
+
+        mel_transform = T.MelScale(
+            n_mels = self.n_mels,
+            sample_rate = self.sampling_rate,
+            n_stft = self.n_fft // 2 + 1,
+            f_max = self.f_max
+        )
+
+        mel = mel_transform(spectrogram)
+
+        if self.log:
+            mel = T.AmplitudeToDB()(mel)
+
+        mel = rearrange(mel, 'b d n -> b n d')
+        return mel
+
+    def decode(self, mel):
+        mel = rearrange(mel, 'b n d -> b d n')
+
+        if self.log:
+            mel = DB_to_amplitude(mel, ref = 1., power = 0.5)
+
+        return self.vocos.decode(mel)
 
 class EncodecVoco(AudioEncoderDecoder):
     def __init__(
