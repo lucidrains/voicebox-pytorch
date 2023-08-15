@@ -20,6 +20,7 @@ setup(
     'naturalspeech2-pytorch>=0.0.41',
     'beartype',
     'einops>=0.6.1',
+    'lightning>=2.0.7',
     'torch>=2.0',
     'torchdiffeq',
     'torchode',
