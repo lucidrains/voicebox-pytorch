@@ -651,7 +651,7 @@ class VoiceBox(Module):
         super().__init__()
         dim_in = default(dim_in, dim)
 
-        time_hidden_dim = default(time_hidden_dim, dim * 4)
+        time_hidden_dim = default(time_hidden_dim, dim)
 
         self.audio_enc_dec = audio_enc_dec
 
@@ -689,8 +689,7 @@ class VoiceBox(Module):
             heads = heads,
             ff_mult = ff_mult,
             attn_flash = attn_flash,
-            adaptive_rmsnorm = True,
-            adaptive_rmsnorm_cond_dim_in = time_hidden_dim
+            adaptive_rmsnorm=False
         )
 
         dim_out = audio_enc_dec.latent_dim if exists(audio_enc_dec) else dim_in
@@ -774,11 +773,12 @@ class VoiceBox(Module):
 
         x = self.conv_embed(x) + x
 
-        time_emb = self.sinu_pos_emb(times)
+        time_emb = self.sinu_pos_emb(times).unsqueeze(1)
+        x = torch.cat((x, time_emb), dim=1)
 
         # attend
 
-        x = self.transformer(x, adaptive_rmsnorm_cond = time_emb)
+        x = self.transformer(x, adaptive_rmsnorm_cond = time_emb)[:, :-1]
 
         x = self.to_pred(x)
 
