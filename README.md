@@ -6,6 +6,8 @@ Implementation of <a href="https://arxiv.org/abs/2306.15687">Voicebox</a>, new S
 
 In this work, we will use rotary embeddings. The authors seem unaware that ALiBi cannot be straightforwardly used for bidirectional models.
 
+The paper also addresses the issue with time embedding incorrectly subjected to relative distances (they concat the time embedding along the frame dimension of the audio tokens). This repository will use adaptive normalization, as applied successfully in <a href="https://arxiv.org/abs/2211.07292">Paella</a>
+
 ## Appreciation
 
 - <a href="https://stability.ai/">StabilityAI</a> for the generous sponsorship, as well as my other sponsors, for affording me the independence to open source artificial intelligence.
