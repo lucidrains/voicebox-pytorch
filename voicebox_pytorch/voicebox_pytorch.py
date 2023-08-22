@@ -563,6 +563,8 @@ class DurationPredictor(Module):
             else:
                 mask = prob_mask_like((batch, seq_len), self.p_drop_prob, self.device)
 
+        cond = cond * rearrange(~mask, '... -> ... 1')
+
         # classifier free guidance
 
         if cond_drop_prob > 0.:
@@ -750,6 +752,8 @@ class VoiceBox(Module):
                 mask = mask_from_frac_lengths(seq_len, frac_lengths)
             else:
                 mask = prob_mask_like((batch, seq_len), self.p_drop_prob, self.device)
+
+        cond = cond * rearrange(~mask, '... -> ... 1')
 
         # classifier free guidance
 
