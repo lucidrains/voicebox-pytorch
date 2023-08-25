@@ -1,4 +1,4 @@
-<img src="./voicebox.png" width="400px"></img>
+<img src="./images/voicebox.png" width="400px"></img>
 
 ## Voicebox - Pytorch (wip)
 
@@ -10,9 +10,9 @@ The paper also addresses the issue with time embedding incorrectly subjected to 
 
 ## Appreciation
 
-- <a href="https://stability.ai/">StabilityAI</a> for the generous sponsorship, as well as my other sponsors, for affording me the independence to open source artificial intelligence.
+- <a href="https://translated.com"><img style="vertical-align: middle;" src="./images/translated.png" height="20px" alt="Translated"><img></a> for awarding me the <a href="https://imminent.translated.com/research-grants-ceremony-innovations-in-language-technology">Imminent Grant</a> to advance the state of open sourced text-to-speech solutions. This project was started and will be completed under this grant.
 
-- <a href="https://translated.com">Translated</a> for the generous grant to advance the state of open source text-to-speech solutions. This project was started and will be finished under this grant.
+- <a href="https://stability.ai/">StabilityAI</a> for the generous sponsorship, as well as my other sponsors, for affording me the independence to open source artificial intelligence.
 
 - <a href="https://github.com/b-chiang">Bryan Chiang</a> for the ongoing code review, sharing his expertise on TTS, and pointing me to <a href="https://github.com/atong01/conditional-flow-matching">an open sourced implementation</a> of conditional flow matching
 
