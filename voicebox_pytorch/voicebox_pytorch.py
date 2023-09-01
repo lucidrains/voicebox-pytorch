@@ -676,7 +676,7 @@ class VoiceBox(Module):
 
         self.to_embed = nn.Linear(dim_in * 2 + dim_phoneme_emb, dim)
 
-        self.null_cond = nn.Parameter(torch.zeros(dim))
+        self.null_cond = nn.Parameter(torch.zeros(dim_in))
 
         self.conv_embed = ConvPositionEmbed(
             dim = dim,
