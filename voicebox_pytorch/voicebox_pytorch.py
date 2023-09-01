@@ -233,7 +233,7 @@ class Attention(Module):
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = h), (q, k, v))
 
         if exists(rotary_emb):
-            q, k = map(lambda t: apply_rotary_pos_emb(t, rotary_emb), (q, k))
+            q, k = map(lambda t: apply_rotary_pos_emb(rotary_emb, t), (q, k))
 
         out = self.attend(q, k, v, mask = mask)
 
