@@ -592,7 +592,7 @@ class DurationPredictor(Module):
 
         if should_align:
             alignment_hard, _, alignment_logprob, _ = self.forward_aligner(phoneme_emb, phoneme_mask, mel, mel_mask)
-
+            target = alignment_hard
         # combine audio, phoneme, conditioning
 
         embed = torch.cat((x, phoneme_emb, cond), dim = -1)
