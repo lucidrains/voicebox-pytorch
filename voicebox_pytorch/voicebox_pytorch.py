@@ -1,6 +1,7 @@
 import math
 from random import random
 from functools import partial
+import logging
 
 import torch
 from torch import nn, Tensor, einsum, IntTensor, FloatTensor, BoolTensor
@@ -28,6 +29,7 @@ from torchaudio.functional import DB_to_amplitude
 
 from vocos import Vocos
 
+_LOGGER = logging.getLogger(__file__)
 # helper functions
 
 def exists(val):
@@ -894,12 +896,12 @@ class ConditionalFlowMatcherWrapper(Module):
         t = torch.linspace(0, 1, steps, device = self.device)
 
         if not self.use_torchode:
-            print('sampling with torchdiffeq')
+            _LOGGER.debug('sampling with torchdiffeq')
 
             trajectory = odeint(fn, y0, t, **self.odeint_kwargs)
             sampled = trajectory[-1]
         else:
-            print('sampling with torchode')
+            _LOGGER.debug('sampling with torchode')
 
             t = repeat(t, 'n -> b n', b = batch)
             y0, packed_shape = pack_one(y0, 'b *')
