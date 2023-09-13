@@ -19,8 +19,6 @@ from einops import rearrange, repeat, reduce, pack, unpack
 
 from voicebox_pytorch.attend import Attend
 
-from naturalspeech2_pytorch.aligner import Aligner, ForwardSumLoss, maximum_path
-
 from audiolm_pytorch import EncodecWrapper
 
 import torchaudio.transforms as T
@@ -422,222 +420,12 @@ class EncodecVoco(AudioEncoderDecoder):
 
 # both duration and main denoising model are transformers
 
-class DurationPredictor(Module):
-    def __init__(
-        self,
-        *,
-        num_phoneme_tokens,
-        audio_enc_dec: Optional[AudioEncoderDecoder] = None,
-        dim_phoneme_emb = 512,
-        dim = 512,
-        depth = 10,
-        dim_head = 64,
-        heads = 8,
-        ff_mult = 4,
-        conv_pos_embed_kernel_size = 31,
-        conv_pos_embed_groups = None,
-        attn_flash = False,
-        p_drop_prob = 0.2, # p_drop in paper
-        frac_lengths_mask: Tuple[float, float] = (0.1, 1.),
-        aligner_kwargs: dict = dict(dim_in = 80, attn_channels = 80)
-    ):
-        super().__init__()
-
-        self.audio_enc_dec = audio_enc_dec
-
-        if exists(audio_enc_dec) and dim != audio_enc_dec.latent_dim:
-            self.proj_in = nn.Linear(audio_enc_dec.latent_dim, dim)
-        else:
-            self.proj_in = nn.Identity()
-
-        self.null_phoneme_id = num_phoneme_tokens # use last phoneme token as null token for CFG
-        self.to_phoneme_emb = nn.Embedding(num_phoneme_tokens + 1, dim_phoneme_emb)
-
-        self.p_drop_prob = p_drop_prob
-        self.frac_lengths_mask = frac_lengths_mask
-
-        self.to_embed = nn.Linear(dim * 2 + dim_phoneme_emb, dim)
-
-        self.null_cond = nn.Parameter(torch.zeros(dim))
-
-        self.conv_embed = ConvPositionEmbed(
-            dim = dim,
-            kernel_size = conv_pos_embed_kernel_size,
-            groups = conv_pos_embed_groups
-        )
-
-        self.transformer = Transformer(
-            dim = dim,
-            depth = depth,
-            dim_head = dim_head,
-            heads = heads,
-            ff_mult = ff_mult,
-            attn_flash = attn_flash
-        )
-
-        self.to_pred = nn.Sequential(
-            nn.Linear(dim, 1),
-            Rearrange('... 1 -> ...')
-        )
-
-        # aligner related
-
-        # if we are using mel spec with 80 channels, we need to set attn_channels to 80
-        # dim_in assuming we have spec with 80 channels
-
-        self.aligner = Aligner(dim_hidden = dim_phoneme_emb, **aligner_kwargs)
-        self.align_loss = ForwardSumLoss()
-
-    @property
-    def device(self):
-        return next(self.parameters()).device
-
-    @torch.inference_mode()
-    def forward_with_cond_scale(
-        self,
-        *args,
-        cond_scale = 1.,
-        **kwargs
-    ):
-        logits = self.forward(*args, cond_drop_prob = 0., **kwargs)
-
-        if cond_scale == 1.:
-            return logits
-
-        null_logits = self.forward(*args, cond_drop_prob = 1., **kwargs)
-        return null_logits + (logits - null_logits) * cond_scale
-
-    @beartype
-    def forward_aligner(
-        self,
-        x: FloatTensor,     # (b, t, c)
-        x_mask: IntTensor,  # (b, 1, t)
-        y: FloatTensor,     # (b, t, c)
-        y_mask: IntTensor   # (b, 1, t)
-    ) -> Tuple[
-        FloatTensor,        # alignment_hard: (b, t)
-        FloatTensor,        # alignment_soft: (b, tx, ty)
-        FloatTensor,        # alignment_logprob: (b, 1, ty, tx)
-        BoolTensor          # alignment_mas: (b, tx, ty)
-    ]:
-        attn_mask = rearrange(x_mask, 'b 1 t -> b 1 t 1') * rearrange(y_mask, 'b 1 t -> b 1 1 t')
-        alignment_soft, alignment_logprob = self.aligner(rearrange(y, 'b t c -> b c t'), x, x_mask)
-
-        assert not torch.isnan(alignment_soft).any()
-
-        alignment_mas = maximum_path(
-            rearrange(alignment_soft, 'b 1 t1 t2 -> b t2 t1').contiguous(),
-            rearrange(attn_mask, 'b 1 t1 t2 -> b t1 t2').contiguous()
-        )
-
-        alignment_hard = torch.sum(alignment_mas, -1).float()
-        alignment_soft = rearrange(alignment_soft, 'b 1 t1 t2 -> b t2 t1')
-        return alignment_hard, alignment_soft, alignment_logprob, alignment_mas
-
-    def forward(
-        self,
-        x,
-        *,
-        phoneme_ids,
-        mel,
-        cond,
-        cond_drop_prob = 0.,
-        target = None,
-        mask = None,
-        phoneme_len = None,
-        mel_len = None,
-        phoneme_mask = None,
-        mel_mask = None,
-    ):
-        batch, seq_len, cond_dim = cond.shape
-        assert cond_dim == x.shape[-1]
-
-        x, cond = map(self.proj_in, (x, cond))
-
-        # construct mask if not given
-
-        if not exists(mask):
-            if coin_flip():
-                frac_lengths = torch.zeros((batch,), device = self.device).float().uniform_(*self.frac_lengths_mask)
-                mask = mask_from_frac_lengths(seq_len, frac_lengths)
-            else:
-                mask = prob_mask_like((batch, seq_len), self.p_drop_prob, self.device)
-
-        cond = cond * rearrange(~mask, '... -> ... 1')
-
-        # classifier free guidance
-
-        if cond_drop_prob > 0.:
-            cond_drop_mask = prob_mask_like(cond.shape[:1], cond_drop_prob, cond.device)
-
-            cond = torch.where(
-                rearrange(cond_drop_mask, '... -> ... 1 1'),
-                self.null_cond,
-                cond
-            )
-
-            phoneme_ids = torch.where(
-                rearrange(cond_drop_mask, '... -> ... 1'),
-                self.null_phoneme_id,
-                phoneme_ids
-            )
-
-        phoneme_emb = self.to_phoneme_emb(phoneme_ids)
-
-        # aligner
-        # use alignment_hard to oversample phonemes
-        # Duration Predictor should predict the duration of unmasked phonemes where target is masked alignment_hard
-
-        should_align = all([exists(el) for el in (phoneme_len, mel_len, phoneme_mask, mel_mask)])
-
-        if should_align:
-            alignment_hard, _, alignment_logprob, _ = self.forward_aligner(phoneme_emb, phoneme_mask, mel, mel_mask)
-            target = alignment_hard
-        # combine audio, phoneme, conditioning
-
-        embed = torch.cat((x, phoneme_emb, cond), dim = -1)
-        x = self.to_embed(embed)
-
-        x = self.conv_embed(x) + x
-
-        x = self.transformer(x)
-
-        x = self.to_pred(x)
-
-        if not exists(target):
-            return x
-
-        if not exists(mask):
-            return F.l1_loss(x, target)
-
-        loss = F.l1_loss(x, target, reduction = 'none')
-        loss = loss.masked_fill(~mask, 0.)
-
-        # masked mean
-
-        num = reduce(loss, 'b n -> b', 'sum')
-        den = mask.sum(dim = -1).clamp(min = 1e-5)
-        loss = num / den
-        loss = loss.mean()
-        
-        if not should_align:
-            return loss
-
-        #aligner loss
-
-        align_loss = self.align_loss(alignment_logprob, phoneme_len, mel_len)
-        loss = loss + align_loss
-
-        return loss
-
 class VoiceBox(Module):
     def __init__(
         self,
         *,
-        num_phoneme_tokens,
         audio_enc_dec: Optional[AudioEncoderDecoder] = None,
         dim_in = None,
-        dim_phoneme_emb = 1024,
         dim = 1024,
         depth = 24,
         dim_head = 64,
@@ -646,7 +434,7 @@ class VoiceBox(Module):
         time_hidden_dim = None,
         conv_pos_embed_kernel_size = 31,
         conv_pos_embed_groups = None,
-        attn_flash = False,
+        attn_flash = True,
         p_drop_prob = 0.3, # p_drop in paper
         frac_lengths_mask: Tuple[float, float] = (0.7, 1.)
     ):
@@ -668,13 +456,10 @@ class VoiceBox(Module):
             nn.SiLU()
         )
 
-        self.null_phoneme_id = num_phoneme_tokens # use last phoneme token as null token for CFG
-        self.to_phoneme_emb = nn.Embedding(num_phoneme_tokens + 1, dim_phoneme_emb)
-
         self.p_drop_prob = p_drop_prob
         self.frac_lengths_mask = frac_lengths_mask
 
-        self.to_embed = nn.Linear(dim_in * 2 + dim_phoneme_emb, dim)
+        self.to_embed = nn.Linear(dim_in * 2, dim)
 
         self.null_cond = nn.Parameter(torch.zeros(dim_in))
 
@@ -703,6 +488,7 @@ class VoiceBox(Module):
     def device(self):
         return next(self.parameters()).device
 
+    # I guess this is the CFG?
     @torch.inference_mode()
     def forward_with_cond_scale(
         self,
@@ -722,7 +508,6 @@ class VoiceBox(Module):
         self,
         x,
         *,
-        phoneme_ids,
         cond,
         times,
         cond_drop_prob = 0.1,
@@ -745,7 +530,7 @@ class VoiceBox(Module):
             times = repeat(times, '1 -> b', b = cond.shape[0])
 
         # construct mask if not given
-
+        #TODO: decide on default masking scheme
         if not exists(mask):
             if coin_flip():
                 frac_lengths = torch.zeros((batch,), device = self.device).float().uniform_(*self.frac_lengths_mask)
@@ -766,14 +551,7 @@ class VoiceBox(Module):
                 cond
             )
 
-            phoneme_ids = torch.where(
-                rearrange(cond_drop_mask, '... -> ... 1'),
-                self.null_phoneme_id,
-                phoneme_ids
-            )
-
-        phoneme_emb = self.to_phoneme_emb(phoneme_ids)
-        embed = torch.cat((x, phoneme_emb, cond), dim = -1)
+        embed = torch.cat((x, cond), dim = -1)
         x = self.to_embed(embed)
 
         x = self.conv_embed(x) + x
@@ -851,7 +629,6 @@ class ConditionalFlowMatcherWrapper(Module):
     def sample(
         self,
         *,
-        phoneme_ids,
         cond,
         mask = None,
         steps = 3,
@@ -880,7 +657,6 @@ class ConditionalFlowMatcherWrapper(Module):
             out = self.voicebox.forward_with_cond_scale(
                 x,
                 times = t,
-                phoneme_ids = phoneme_ids,
                 cond = cond,
                 cond_scale = cond_scale
             )
@@ -934,7 +710,6 @@ class ConditionalFlowMatcherWrapper(Module):
         self,
         x1,
         *,
-        phoneme_ids,
         cond,
         mask = None
     ):
@@ -981,7 +756,6 @@ class ConditionalFlowMatcherWrapper(Module):
 
         loss = self.voicebox(
             w,
-            phoneme_ids = phoneme_ids,
             cond = cond,
             mask = mask,
             times = times,
