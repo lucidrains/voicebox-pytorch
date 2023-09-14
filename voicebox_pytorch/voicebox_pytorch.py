@@ -29,7 +29,7 @@ from torchaudio.functional import DB_to_amplitude
 
 from vocos import Vocos
 
-_LOGGER = logging.getLogger(__file__)
+LOGGER = logging.getLogger(__file__)
 # helper functions
 
 def exists(val):
