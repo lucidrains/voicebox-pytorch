@@ -217,6 +217,7 @@ class Attention(Module):
         dim,
         dim_head = 64,
         heads = 8,
+        dropout=0,
         flash = False
     ):
         super().__init__()
@@ -224,7 +225,7 @@ class Attention(Module):
         self.scale = dim_head ** -0.5
         dim_inner = dim_head * heads
 
-        self.attend = Attend(flash = flash)
+        self.attend = Attend(dropout, flash = flash)
         self.to_qkv = nn.Linear(dim, dim_inner * 3, bias = False)
         self.to_out = nn.Linear(dim_inner, dim, bias = False)
 
@@ -262,6 +263,7 @@ class Transformer(Module):
         dim_head = 64,
         heads = 8,
         ff_mult = 4,
+        attn_dropout=0,
         attn_flash = False,
         adaptive_rmsnorm = False,
         adaptive_rmsnorm_cond_dim_in = None
@@ -284,7 +286,7 @@ class Transformer(Module):
             self.layers.append(nn.ModuleList([
                 nn.Linear(dim * 2, dim) if has_skip else None,
                 rmsnorm_klass(dim = dim),
-                Attention(dim = dim, dim_head = dim_head, heads = heads, flash = attn_flash),
+                Attention(dim=dim, dim_head=dim_head, heads=heads, dropout=attn_dropout, flash=attn_flash),
                 rmsnorm_klass(dim = dim),
                 FeedForward(dim = dim, mult = ff_mult)
             ]))
@@ -438,6 +440,7 @@ class DurationPredictor(Module):
         ff_mult = 4,
         conv_pos_embed_kernel_size = 31,
         conv_pos_embed_groups = None,
+        attn_dropout=0,
         attn_flash = False,
         p_drop_prob = 0.2, # p_drop in paper
         frac_lengths_mask: Tuple[float, float] = (0.1, 1.),
@@ -474,6 +477,7 @@ class DurationPredictor(Module):
             dim_head = dim_head,
             heads = heads,
             ff_mult = ff_mult,
+            attn_dropout=attn_dropout,
             attn_flash = attn_flash
         )
 
@@ -648,6 +652,7 @@ class VoiceBox(Module):
         time_hidden_dim = None,
         conv_pos_embed_kernel_size = 31,
         conv_pos_embed_groups = None,
+        attn_dropout=0,
         attn_flash = False,
         p_drop_prob = 0.3, # p_drop in paper
         frac_lengths_mask: Tuple[float, float] = (0.7, 1.)
@@ -692,6 +697,7 @@ class VoiceBox(Module):
             dim_head = dim_head,
             heads = heads,
             ff_mult = ff_mult,
+            attn_dropout=attn_dropout,
             attn_flash = attn_flash,
             adaptive_rmsnorm = True,
             adaptive_rmsnorm_cond_dim_in = time_hidden_dim
