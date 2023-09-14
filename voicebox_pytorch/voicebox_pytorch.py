@@ -896,12 +896,12 @@ class ConditionalFlowMatcherWrapper(Module):
         t = torch.linspace(0, 1, steps, device = self.device)
 
         if not self.use_torchode:
-            _LOGGER.debug('sampling with torchdiffeq')
+            LOGGER.debug('sampling with torchdiffeq')
 
             trajectory = odeint(fn, y0, t, **self.odeint_kwargs)
             sampled = trajectory[-1]
         else:
-            _LOGGER.debug('sampling with torchode')
+            LOGGER.debug('sampling with torchode')
 
             t = repeat(t, 'n -> b n', b = batch)
             y0, packed_shape = pack_one(y0, 'b *')
