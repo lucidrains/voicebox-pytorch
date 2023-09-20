@@ -701,6 +701,8 @@ class ConditionalFlowMatcherWrapper(Module):
             sampled = sol.ys[:, -1]
             sampled = unpack_one(sampled, packed_shape, 'b *')
 
+        sampled.to(cond.dtype)
+
         if not decode_to_audio or not exists(self.voicebox.audio_enc_dec):
             return sampled
 

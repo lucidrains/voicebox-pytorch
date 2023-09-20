@@ -102,7 +102,7 @@ class Attend(nn.Module):
         if exists(mask) and mask.ndim != 4:
             mask = rearrange(mask, 'b j -> b 1 1 j')
 
-        if self.flash:
+        if self.flash and q.dtype==torch.float16:
             return self.flash_attn(q, k, v, mask = mask)
 
         # similarity
