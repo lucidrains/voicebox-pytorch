@@ -85,6 +85,9 @@ sampled = cfm_wrapper.sample(
 - [x] setup training and sampling with raw audio, if `audio_enc_dec` is passed in
 - [x] integrate with log mel spec / encodec - vocos
 
+- [ ] spear-tts-integration
+    - [ ] extract sample hz from wav2vec module from spear-tts, and handle conditioning and mask during training and sampling automatically. use verified soundstorm logic as a guide
+
 - [ ] figure out the correct settings for `MelVoco` encode, as the reconstructed audio is longer in length
 - [ ] calculate how many seconds corresponds to each frame and add as property on `AudioEncoderDecoder` - when sampling, allow for specifying in seconds
 - [ ] basic trainer
