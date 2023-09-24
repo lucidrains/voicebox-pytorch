@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 setup(
   name = 'voicebox-pytorch',
   packages = find_packages(exclude=[]),
-  version = '0.0.35',
+  version = '0.1.0',
   license='MIT',
   description = 'Voicebox - Pytorch',
   author = 'Phil Wang',
@@ -16,11 +16,11 @@ setup(
     'text to speech'
   ],
   install_requires=[
+    'accelerate',
     'audiolm-pytorch>=1.2.28',
     'naturalspeech2-pytorch>=0.0.41',
     'beartype',
     'einops>=0.6.1',
-    'lightning>=2.0.7',
     'spear-tts-pytorch>=0.3.4',
     'torch>=2.0',
     'torchdiffeq',

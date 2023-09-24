@@ -28,17 +28,36 @@ $ pip install voicebox-pytorch
 
 ## Usage
 
+Training and sampling with `TextToSemantic` module from <a href="https://github.com/lucidrains/spear-tts-pytorch">SpearTTS</a>
+
 ```python
 import torch
 
 from voicebox_pytorch import (
     VoiceBox,
-    ConditionalFlowMatcherWrapper
+    EncodecVoco,
+    ConditionalFlowMatcherWrapper,
+    HubertWithKmeans,
+    TextToSemantic
+)
+
+wav2vec = HubertWithKmeans(
+    checkpoint_path = './path/to/hubert/checkpoint.pt',
+    kmeans_path = './path/to/hubert/kmeans.bin'
+)
+
+text_to_semantic = TextToSemantic(
+    wav2vec = wav2vec,
+    dim = 512,
+    source_depth = 1,
+    target_depth = 1,
+    use_openai_tokenizer = True
 )
 
 model = VoiceBox(
     dim = 512,
-    num_phoneme_tokens = 256,
+    audio_enc_dec = EncodecVoco(),
+    num_cond_tokens = 500,
     depth = 2,
     dim_head = 64,
     heads = 16
@@ -46,30 +65,66 @@ model = VoiceBox(
 
 cfm_wrapper = ConditionalFlowMatcherWrapper(
     voicebox = model,
-    use_torchode = False   # by default will use torchdiffeq with midpoint as in paper, but can use the promising torchode package too
+    text_to_semantic = text_to_semantic
 )
 
-x = torch.randn(2, 1024, 512)
-phonemes = torch.randint(0, 256, (2, 1024))
-mask = torch.randint(0, 2, (2, 1024)).bool()
+# mock data
 
-loss = cfm_wrapper(
-    x,
-    phoneme_ids = phonemes,
-    cond = x,
-    mask = mask
-)
+audio = torch.randn(2, 12000)
+cond = torch.randn(2, 12000)
+
+# train
+
+loss = cfm_wrapper(audio, cond = cond)
 
 loss.backward()
 
-# after much training above...
+# after much training
 
-sampled = cfm_wrapper.sample(
-    phoneme_ids = phonemes,
-    cond = x,
-    mask = mask
-) # (2, 1024, 512) <- same as cond
+texts = [
+    'the rain in spain falls mainly in the plains',
+    'she sells sea shells by the seashore'
+]
 
+sampled = cfm_wrapper.sample(cond = cond, texts = texts) # (2, 1, <audio length>)
+```
+
+For unconditional training, `condition_on_text` on `VoiceBox` must be set to `False`
+
+```python
+import torch
+from voicebox_pytorch import (
+    VoiceBox,
+    ConditionalFlowMatcherWrapper
+)
+
+model = VoiceBox(
+    dim = 512,
+    num_cond_tokens = 500,
+    depth = 2,
+    dim_head = 64,
+    heads = 16,
+    condition_on_text = False
+)
+
+cfm_wrapper = ConditionalFlowMatcherWrapper(
+    voicebox = model
+)
+
+# mock data
+
+cond = torch.randn(2, 1024, 512)
+x = torch.randn(2, 1024, 512)
+
+# train
+
+loss = cfm_wrapper(x, cond = cond)
+
+loss.backward()
+
+# after much training
+
+sampled = cfm_wrapper.sample(cond = cond)
 ```
 
 ## Todo
@@ -84,13 +139,11 @@ sampled = cfm_wrapper.sample(
 - [x] add encodec / voco for starters
 - [x] setup training and sampling with raw audio, if `audio_enc_dec` is passed in
 - [x] integrate with log mel spec / encodec - vocos
+- [x] spear-tts-integration
 
-- [ ] spear-tts-integration
-    - [ ] extract sample hz from wav2vec module from spear-tts, and handle conditioning and mask during training and sampling automatically. use verified soundstorm logic as a guide
-
+- [ ] basic accelerate trainer
 - [ ] figure out the correct settings for `MelVoco` encode, as the reconstructed audio is longer in length
 - [ ] calculate how many seconds corresponds to each frame and add as property on `AudioEncoderDecoder` - when sampling, allow for specifying in seconds
-- [ ] basic trainer
 
 ## Citations
 

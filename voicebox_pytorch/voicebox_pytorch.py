@@ -1,7 +1,7 @@
 import math
+import logging
 from random import random
 from functools import partial
-import logging
 
 import torch
 from torch import nn, Tensor, einsum, IntTensor, FloatTensor, BoolTensor
@@ -9,7 +9,6 @@ from torch.nn import Module
 import torch.nn.functional as F
 
 import torchode as to
-
 from torchdiffeq import odeint
 
 from beartype import beartype
@@ -26,7 +25,7 @@ from audiolm_pytorch import EncodecWrapper
 from spear_tts_pytorch import TextToSemantic
 
 import torchaudio.transforms as T
-from torchaudio.functional import DB_to_amplitude
+from torchaudio.functional import DB_to_amplitude, resample
 
 from vocos import Vocos
 
@@ -397,10 +396,12 @@ class EncodecVoco(AudioEncoderDecoder):
     def __init__(
         self,
         *,
+        sampling_rate = 24000,
         pretrained_vocos_path = 'charactr/vocos-encodec-24khz',
         bandwidth_id = 2
     ):
         super().__init__()
+        self.sampling_rate = sampling_rate
         self.encodec = EncodecWrapper()
         self.vocos = Vocos.from_pretrained(pretrained_vocos_path)
 
@@ -643,7 +644,7 @@ class VoiceBox(Module):
     def __init__(
         self,
         *,
-        num_cond_tokens,
+        num_cond_tokens = None,
         audio_enc_dec: Optional[AudioEncoderDecoder] = None,
         dim_in = None,
         dim_cond_emb = 1024,
@@ -658,7 +659,8 @@ class VoiceBox(Module):
         attn_dropout=0,
         attn_flash = False,
         p_drop_prob = 0.3, # p_drop in paper
-        frac_lengths_mask: Tuple[float, float] = (0.7, 1.)
+        frac_lengths_mask: Tuple[float, float] = (0.7, 1.),
+        condition_on_text = True
     ):
         super().__init__()
         dim_in = default(dim_in, dim)
@@ -678,8 +680,17 @@ class VoiceBox(Module):
             nn.SiLU()
         )
 
-        self.null_cond_id = num_cond_tokens # use last phoneme token as null token for CFG
-        self.to_cond_emb = nn.Embedding(num_cond_tokens + 1, dim_cond_emb)
+        assert not (condition_on_text and not exists(num_cond_tokens)), 'number of conditioning tokens must be specified (whether phonemes or semantic token ids) if training conditional voicebox'
+
+        if not condition_on_text:
+            dim_cond_emb = 0
+
+        self.condition_on_text = condition_on_text
+        self.num_cond_tokens = num_cond_tokens
+
+        if condition_on_text:
+            self.null_cond_id = num_cond_tokens # use last phoneme token as null token for CFG
+            self.to_cond_emb = nn.Embedding(num_cond_tokens + 1, dim_cond_emb)
 
         self.p_drop_prob = p_drop_prob
         self.frac_lengths_mask = frac_lengths_mask
@@ -738,7 +749,7 @@ class VoiceBox(Module):
         cond_token_ids,
         cond_drop_prob = 0.1,
         target = None,
-        mask = None,
+        mask = None
     ):
         batch, seq_len, cond_dim = cond.shape
         assert cond_dim == x.shape[-1]
@@ -783,18 +794,25 @@ class VoiceBox(Module):
                 cond_token_ids
             )
 
-        cond_emb = self.to_cond_emb(cond_token_ids)
+        # phoneme or semantic conditioning embedding
 
-        # (todo) align conditioning embed if needed
-        # needed for spear-tts semantic <-> audio
+        cond_emb = None
 
-        min_length = min([t.shape[-2] for t in (x, cond_emb, cond)])
-        x, cond_emb, cond = tuple(t[..., :min_length, :] for t in (x, cond_emb, cond))
+        if self.condition_on_text:
+            cond_emb = self.to_cond_emb(cond_token_ids)
+
+            cond_emb_length = cond_emb.shape[-2]
+            if cond_emb_length != seq_len:
+                cond_emb = rearrange(cond_emb, 'b n d -> b d n 1')
+                cond_emb = F.interpolate(cond_emb, (seq_len, 1), mode = 'bilinear')
+                cond_emb = rearrange(cond_emb, 'b d n 1 -> b n d')
 
         # concat source signal, semantic / phoneme conditioning embed, and conditioning
         # and project
 
-        embed = torch.cat((x, cond_emb, cond), dim = -1)
+        to_concat = [*filter(exists, (x, cond_emb, cond))]
+        embed = torch.cat(to_concat, dim = -1)
+
         x = self.to_embed(embed)
 
         x = self.conv_embed(x) + x
@@ -811,9 +829,6 @@ class VoiceBox(Module):
 
         if not exists(target):
             return x
-
-        target = target[..., :min_length, :]
-        mask = mask[..., :min_length]
 
         if not exists(mask):
             return F.mse_loss(x, target)
@@ -855,8 +870,11 @@ class ConditionalFlowMatcherWrapper(Module):
         self.sigma = sigma
 
         self.voicebox = voicebox
-
+        self.condition_on_text = voicebox.condition_on_text
         self.text_to_semantic = text_to_semantic
+
+        assert not (not self.condition_on_text and exists(text_to_semantic)), 'TextToSemantic should not be passed in if not conditioning on text'
+        assert not (exists(text_to_semantic) and not exists(text_to_semantic.wav2vec)), 'the wav2vec module must exist on the TextToSemantic, if being used to condition on text'
 
         self.cond_drop_prob = cond_drop_prob
 
@@ -903,29 +921,43 @@ class ConditionalFlowMatcherWrapper(Module):
 
         # setup text conditioning, either coming from duration model (as phoneme ids)
         # for coming from text-to-semantic module from spear-tts paper, as (semantic ids)
-        # todo, DRY the conditioning logic, if sampling and training is not too different once everything is done
 
-        assert sum([*map(exists, (texts, text_token_ids, semantic_token_ids, phoneme_ids))]) <= 1
+        num_cond_inputs = sum([*map(exists, (texts, text_token_ids, semantic_token_ids, phoneme_ids))])
+        assert num_cond_inputs <= 1
 
-        using_text_to_semantic = exists(texts) or exists(text_token_ids)
+        mask = None
+        cond_token_ids = None
 
-        if using_text_to_semantic:
-            assert exists(self.text_to_semantic), 'TextToSemantic must be passed into the ConditionalFlowMatcherWrapper as `text_to_semantic` in order to train directly on text'
+        if self.condition_on_text:
+            if exists(self.text_to_semantic):
+                assert not exists(phoneme_ids)
 
-        if using_text_to_semantic:
-            semantic_token_ids = self.text_to_semantic.generate(
-                source = default(text_token_ids, texts),
-                source_type = 'text',
-                target_type = 'speech',
-                max_length = 10
-            )
+                if not exists(semantic_token_ids):
 
-        cond_token_ids = semantic_token_ids if using_text_to_semantic else phoneme_ids
+                    semantic_token_ids, mask = self.text_to_semantic.generate(
+                        source = default(text_token_ids, texts),
+                        source_type = 'text',
+                        target_type = 'speech',
+                        max_length = 10,
+                        return_target_mask = True
+                    )
 
-        # todo (properly align for text to semantic)
+                cond_token_ids = semantic_token_ids
+            else:
+                cond_token_ids = phoneme_ids
 
-        min_length = min([t.shape[-2] for t in (cond_token_ids, cond)])
-        cond_token_ids, cond = tuple(t[..., :min_length, :] for t in (cond_token_ids, cond))
+            cond_length = cond.shape[-2]
+            cond_tokens_seq_len = cond_token_ids.shape[-1]
+
+            # curtail or pad (todo: generalize this to any dimension and put in a function)
+
+            if cond_length > cond_tokens_seq_len:
+                cond = cond[:, :cond_tokens_seq_len, :]
+            elif cond_length < cond_tokens_seq_len:
+                cond = F.pad(cond, (0, 0, 0, cond_tokens_seq_len), value = 0.)
+
+        else:
+            assert num_cond_inputs == 0, 'no conditioning inputs should be given if not conditioning on text'
 
         # neural ode
 
@@ -940,7 +972,8 @@ class ConditionalFlowMatcherWrapper(Module):
                 times = t,
                 cond_token_ids = cond_token_ids,
                 cond = cond,
-                cond_scale = cond_scale
+                cond_scale = cond_scale,
+                mask = mask
             )
 
             if exists(packed_shape):
@@ -993,11 +1026,10 @@ class ConditionalFlowMatcherWrapper(Module):
         x1,
         *,
         cond,
-        texts: Optional[List[str]] = None,
-        text_token_ids: Optional[Tensor] = None,
         semantic_token_ids = None,
         phoneme_ids = None,
-        mask = None
+        mask = None,
+        input_sampling_rate = None # will assume it to be the same as the audio encoder decoder sampling rate, if not given. if given, will resample
     ):
         """
         following eq (5) (6) in https://arxiv.org/pdf/2306.15687.pdf
@@ -1009,39 +1041,48 @@ class ConditionalFlowMatcherWrapper(Module):
 
         input_is_raw_audio, cond_is_raw_audio = map(is_probably_audio_from_shape, (x1, cond))
 
+        if input_is_raw_audio:
+            raw_audio = x1
+
         if any([input_is_raw_audio, cond_is_raw_audio]):
             assert exists(self.voicebox.audio_enc_dec), 'audio_enc_dec must be set on VoiceBox to train directly on raw audio'
+
+            audio_enc_dec_sampling_rate = self.voicebox.audio_enc_dec.sampling_rate
+            input_sampling_rate = default(input_sampling_rate, audio_enc_dec_sampling_rate)
 
             with torch.no_grad():
                 self.voicebox.audio_enc_dec.eval()
 
                 if input_is_raw_audio:
+                    x1 = resample(x1, input_sampling_rate, audio_enc_dec_sampling_rate)
                     x1 = self.voicebox.audio_enc_dec.encode(x1)
 
                 if cond_is_raw_audio:
+                    cond = resample(cond, input_sampling_rate, audio_enc_dec_sampling_rate)
                     cond = self.voicebox.audio_enc_dec.encode(cond)
 
         # setup text conditioning, either coming from duration model (as phoneme ids)
-        # for coming from text-to-semantic module from spear-tts paper, as (semantic ids)
+        # or from text-to-semantic module, semantic ids encoded with wav2vec (hubert usually)
 
-        assert sum([*map(exists, (texts, text_token_ids, semantic_token_ids, phoneme_ids))]) <= 1
+        assert self.condition_on_text or not (exists(semantic_token_ids) or exists(phoneme_ids)), 'semantic or phoneme ids should not be passed in if not conditioning on text'
 
-        using_text_to_semantic = exists(texts) or exists(text_token_ids)
+        cond_token_ids = None
 
-        if using_text_to_semantic:
-            assert exists(self.text_to_semantic), 'TextToSemantic must be passed into the ConditionalFlowMatcherWrapper as `text_to_semantic` in order to train directly on text'
+        if self.condition_on_text:
+            if exists(self.text_to_semantic):
+                assert not exists(phoneme_ids), 'phoneme ids are not needed for conditioning with spear-tts text-to-semantic'
 
-        if using_text_to_semantic:
-            semantic_token_ids = self.text_to_semantic.generate(
-                source = default(text_token_ids, texts),
-                source_type = 'text',
-                target_type = 'speech',
-                max_length = 10
-            )
+                if not exists(semantic_token_ids):
+                    assert input_is_raw_audio
+                    wav2vec = self.text_to_semantic.wav2vec
+                    wav2vec_input = resample(raw_audio, input_sampling_rate, wav2vec.target_sample_hz)
+                    semantic_token_ids = wav2vec(wav2vec_input).clone()
 
-        cond_token_ids = semantic_token_ids if using_text_to_semantic else phoneme_ids
+                cond_token_ids = semantic_token_ids
+            else:
+                cond_token_ids = phoneme_ids
 
-        # main conditional flow logic is below, in a mere 5 loc
+        # main conditional flow logic is below
 
         # x0 is gaussian noise
 
