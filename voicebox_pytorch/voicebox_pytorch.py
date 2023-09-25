@@ -267,7 +267,9 @@ class Transformer(Module):
         attn_dropout=0,
         attn_flash = False,
         adaptive_rmsnorm = False,
-        adaptive_rmsnorm_cond_dim_in = None
+        adaptive_rmsnorm_cond_dim_in = None,
+        use_unet_skip_connection = False,
+        skip_connect_scale = None
     ):
         super().__init__()
         assert divisible_by(depth, 2)
@@ -280,9 +282,11 @@ class Transformer(Module):
         else:
             rmsnorm_klass = RMSNorm
 
+        self.skip_connect_scale = default(skip_connect_scale, 2 ** -0.5)
+
         for ind in range(depth):
             layer = ind + 1
-            has_skip = layer > (depth // 2)
+            has_skip = use_unet_skip_connection and layer > (depth // 2)
 
             self.layers.append(nn.ModuleList([
                 nn.Linear(dim * 2, dim) if has_skip else None,
@@ -315,7 +319,8 @@ class Transformer(Module):
             if not exists(skip_combiner):
                 skip_connects.append(x)
             else:
-                x = torch.cat((x, skip_connects.pop()), dim = -1)
+                skip_connect = skip_connects.pop() * self.skip_connect_scale
+                x = torch.cat((x, skip_connect), dim = -1)
                 x = skip_combiner(x)
 
             attn_input = attn_prenorm(x, **rmsnorm_kwargs)
