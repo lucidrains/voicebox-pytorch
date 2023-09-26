@@ -41,9 +41,11 @@ from voicebox_pytorch import (
     TextToSemantic
 )
 
+# https://github.com/facebookresearch/fairseq/tree/main/examples/hubert
+
 wav2vec = HubertWithKmeans(
-    checkpoint_path = './hubert_base_ls960.pt',
-    kmeans_path = './hubert_base_ls960_L9_km500.bin'
+    checkpoint_path = '/path/to/hubert/checkpoint.pt',
+    kmeans_path = '/path/to/hubert/kmeans.bin'
 )
 
 text_to_semantic = TextToSemantic(
@@ -53,6 +55,8 @@ text_to_semantic = TextToSemantic(
     target_depth = 1,
     use_openai_tokenizer = True
 )
+
+text_to_semantic.load('/path/to/trained/spear-tts/model.pt')
 
 model = VoiceBox(
     dim = 512,
