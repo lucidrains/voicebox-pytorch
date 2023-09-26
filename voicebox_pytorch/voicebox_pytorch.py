@@ -301,6 +301,7 @@ class Transformer(Module):
     def forward(
         self,
         x,
+        mask = None,
         adaptive_rmsnorm_cond = None
     ):
         skip_connects = []
@@ -324,7 +325,7 @@ class Transformer(Module):
                 x = skip_combiner(x)
 
             attn_input = attn_prenorm(x, **rmsnorm_kwargs)
-            x = attn(attn_input, rotary_emb = rotary_emb) + x
+            x = attn(attn_input, mask = mask, rotary_emb = rotary_emb) + x
 
             ff_input = ff_prenorm(x, **rmsnorm_kwargs) 
             x = ff(ff_input) + x
@@ -749,19 +750,27 @@ class VoiceBox(Module):
         self,
         x,
         *,
-        cond,
         times,
         cond_token_ids,
+        self_attn_mask = None,
         cond_drop_prob = 0.1,
         target = None,
-        mask = None
+        cond = None,
+        cond_mask = None
     ):
-        batch, seq_len, cond_dim = cond.shape
-        assert cond_dim == x.shape[-1]
-
         # project in, in case codebook dim is not equal to model dimensions
 
-        x, cond = map(self.proj_in, (x, cond))
+        x = self.proj_in(x)
+
+        if exists(cond):
+            cond = self.proj_in(cond)
+
+        cond = default(cond, x)
+
+        # shapes
+
+        batch, seq_len, cond_dim = cond.shape
+        assert cond_dim == x.shape[-1]
 
         # auto manage shape of times, for odeint times
 
@@ -771,16 +780,25 @@ class VoiceBox(Module):
         if times.ndim == 1 and times.shape[0] == 1:
             times = repeat(times, '1 -> b', b = cond.shape[0])
 
-        # construct mask if not given
+        # construct conditioning mask if not given
 
-        if not exists(mask):
-            if coin_flip():
-                frac_lengths = torch.zeros((batch,), device = self.device).float().uniform_(*self.frac_lengths_mask)
-                mask = mask_from_frac_lengths(seq_len, frac_lengths)
-            else:
-                mask = prob_mask_like((batch, seq_len), self.p_drop_prob, self.device)
+        if self.training:
+            if not exists(cond_mask):
+                if coin_flip():
+                    frac_lengths = torch.zeros((batch,), device = self.device).float().uniform_(*self.frac_lengths_mask)
+                    cond_mask = mask_from_frac_lengths(seq_len, frac_lengths)
+                else:
+                    cond_mask = prob_mask_like((batch, seq_len), self.p_drop_prob, self.device)
+        else:
+            if not exists(cond_mask):
+                cond_mask = torch.ones((batch, seq_len), device = cond.device, dtype = torch.bool)
 
-        cond = cond * rearrange(~mask, '... -> ... 1')
+        cond_mask_with_pad_dim = rearrange(cond_mask, '... -> ... 1')
+
+        # as described in section 3.2
+
+        x = x * cond_mask_with_pad_dim
+        cond = cond * ~cond_mask_with_pad_dim
 
         # classifier free guidance
 
@@ -826,7 +844,11 @@ class VoiceBox(Module):
 
         # attend
 
-        x = self.transformer(x, adaptive_rmsnorm_cond = time_emb)
+        x = self.transformer(
+            x,
+            mask = self_attn_mask,
+            adaptive_rmsnorm_cond = time_emb
+        )
 
         x = self.to_pred(x)
 
@@ -835,18 +857,18 @@ class VoiceBox(Module):
         if not exists(target):
             return x
 
-        if not exists(mask):
+        if not exists(cond_mask):
             return F.mse_loss(x, target)
 
         loss = F.mse_loss(x, target, reduction = 'none')
 
         loss = reduce(loss, 'b n d -> b n', 'mean')
-        loss = loss.masked_fill(~mask, 0.)
+        loss = loss.masked_fill(~cond_mask, 0.)
 
         # masked mean
 
         num = reduce(loss, 'b n -> b', 'sum')
-        den = mask.sum(dim = -1).clamp(min = 1e-5)
+        den = cond_mask.sum(dim = -1).clamp(min = 1e-5)
         loss = num / den
 
         return loss.mean()
@@ -854,7 +876,7 @@ class VoiceBox(Module):
 # wrapper for the CNF
 
 def is_probably_audio_from_shape(t):
-    return t.ndim == 2 or (t.ndim == 3 and t.shape[1] == 1)
+    return exists(t) and (t.ndim == 2 or (t.ndim == 3 and t.shape[1] == 1))
 
 class ConditionalFlowMatcherWrapper(Module):
     @beartype
@@ -906,7 +928,7 @@ class ConditionalFlowMatcherWrapper(Module):
         text_token_ids: Optional[Tensor] = None,
         semantic_token_ids = None,
         phoneme_ids = None,
-        mask = None,
+        cond_mask = None,
         steps = 3,
         cond_scale = 1.,
         decode_to_audio = True
@@ -930,7 +952,7 @@ class ConditionalFlowMatcherWrapper(Module):
         num_cond_inputs = sum([*map(exists, (texts, text_token_ids, semantic_token_ids, phoneme_ids))])
         assert num_cond_inputs <= 1
 
-        mask = None
+        self_attn_mask = None
         cond_token_ids = None
 
         if self.condition_on_text:
@@ -939,7 +961,7 @@ class ConditionalFlowMatcherWrapper(Module):
 
                 if not exists(semantic_token_ids):
 
-                    semantic_token_ids, mask = self.text_to_semantic.generate(
+                    semantic_token_ids, self_attn_mask = self.text_to_semantic.generate(
                         source = default(text_token_ids, texts),
                         source_type = 'text',
                         target_type = 'speech',
@@ -978,7 +1000,8 @@ class ConditionalFlowMatcherWrapper(Module):
                 cond_token_ids = cond_token_ids,
                 cond = cond,
                 cond_scale = cond_scale,
-                mask = mask
+                cond_mask = cond_mask,
+                self_attn_mask = self_attn_mask
             )
 
             if exists(packed_shape):
@@ -1030,10 +1053,10 @@ class ConditionalFlowMatcherWrapper(Module):
         self,
         x1,
         *,
-        cond,
         semantic_token_ids = None,
         phoneme_ids = None,
-        mask = None,
+        cond = None,
+        cond_mask = None,
         input_sampling_rate = None # will assume it to be the same as the audio encoder decoder sampling rate, if not given. if given, will resample
     ):
         """
@@ -1062,7 +1085,7 @@ class ConditionalFlowMatcherWrapper(Module):
                     x1 = resample(x1, input_sampling_rate, audio_enc_dec_sampling_rate)
                     x1 = self.voicebox.audio_enc_dec.encode(x1)
 
-                if cond_is_raw_audio:
+                if exists(cond) and cond_is_raw_audio:
                     cond = resample(cond, input_sampling_rate, audio_enc_dec_sampling_rate)
                     cond = self.voicebox.audio_enc_dec.encode(cond)
 
@@ -1111,7 +1134,7 @@ class ConditionalFlowMatcherWrapper(Module):
         loss = self.voicebox(
             w,
             cond = cond,
-            mask = mask,
+            cond_mask = cond_mask,
             times = times,
             target = flow,
             cond_token_ids = cond_token_ids,

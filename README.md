@@ -42,8 +42,8 @@ from voicebox_pytorch import (
 )
 
 wav2vec = HubertWithKmeans(
-    checkpoint_path = './path/to/hubert/checkpoint.pt',
-    kmeans_path = './path/to/hubert/kmeans.bin'
+    checkpoint_path = './hubert_base_ls960.pt',
+    kmeans_path = './hubert_base_ls960_L9_km500.bin'
 )
 
 text_to_semantic = TextToSemantic(
@@ -71,12 +71,10 @@ cfm_wrapper = ConditionalFlowMatcherWrapper(
 # mock data
 
 audio = torch.randn(2, 12000)
-cond = torch.randn(2, 12000)
 
 # train
 
-loss = cfm_wrapper(audio, cond = cond)
-
+loss = cfm_wrapper(audio)
 loss.backward()
 
 # after much training
@@ -86,6 +84,7 @@ texts = [
     'she sells sea shells by the seashore'
 ]
 
+cond = torch.randn(2, 12000)
 sampled = cfm_wrapper.sample(cond = cond, texts = texts) # (2, 1, <audio length>)
 ```
 
@@ -113,18 +112,19 @@ cfm_wrapper = ConditionalFlowMatcherWrapper(
 
 # mock data
 
-cond = torch.randn(2, 1024, 512)
 x = torch.randn(2, 1024, 512)
 
 # train
 
-loss = cfm_wrapper(x, cond = cond)
+loss = cfm_wrapper(x)
 
 loss.backward()
 
 # after much training
 
-sampled = cfm_wrapper.sample(cond = cond)
+cond = torch.randn(2, 1024, 512)
+
+sampled = cfm_wrapper.sample(cond = cond) # (2, 1024, 512)
 ```
 
 ## Todo
