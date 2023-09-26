@@ -971,7 +971,7 @@ class ConditionalFlowMatcherWrapper(Module):
         cond_token_ids = None
 
         if self.condition_on_text:
-            if exists(self.text_to_semantic):
+            if exists(self.text_to_semantic) or exists(semantic_token_ids):
                 assert not exists(phoneme_ids)
 
                 if not exists(semantic_token_ids):
@@ -1113,7 +1113,7 @@ class ConditionalFlowMatcherWrapper(Module):
         cond_token_ids = None
 
         if self.condition_on_text:
-            if exists(self.text_to_semantic):
+            if exists(self.text_to_semantic) or exists(semantic_token_ids):
                 assert not exists(phoneme_ids), 'phoneme ids are not needed for conditioning with spear-tts text-to-semantic'
 
                 if not exists(semantic_token_ids):
