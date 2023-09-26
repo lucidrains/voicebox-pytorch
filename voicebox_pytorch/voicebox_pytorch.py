@@ -67,6 +67,19 @@ def prob_mask_like(shape, prob, device):
     else:
         return torch.zeros(shape, device = device).float().uniform_(0, 1) < prob
 
+def reduce_masks_with_and(*masks):
+    masks = [*filter(exists, masks)]
+
+    if len(masks) == 0:
+        return None
+
+    mask, *rest_masks = masks
+
+    for rest_mask in rest_masks:
+        mask = mask & rest_mask
+
+    return mask
+
 # mask construction helpers
 
 def mask_from_start_end_indices(
@@ -857,18 +870,20 @@ class VoiceBox(Module):
         if not exists(target):
             return x
 
-        if not exists(cond_mask):
+        loss_mask = reduce_masks_with_and(cond_mask, self_attn_mask)
+
+        if not exists(loss_mask):
             return F.mse_loss(x, target)
 
         loss = F.mse_loss(x, target, reduction = 'none')
 
         loss = reduce(loss, 'b n d -> b n', 'mean')
-        loss = loss.masked_fill(~cond_mask, 0.)
+        loss = loss.masked_fill(~loss_mask, 0.)
 
         # masked mean
 
         num = reduce(loss, 'b n -> b', 'sum')
-        den = cond_mask.sum(dim = -1).clamp(min = 1e-5)
+        den = loss_mask.sum(dim = -1).clamp(min = 1e-5)
         loss = num / den
 
         return loss.mean()
@@ -1053,6 +1068,7 @@ class ConditionalFlowMatcherWrapper(Module):
         self,
         x1,
         *,
+        mask = None,
         semantic_token_ids = None,
         phoneme_ids = None,
         cond = None,
@@ -1137,6 +1153,7 @@ class ConditionalFlowMatcherWrapper(Module):
             cond_mask = cond_mask,
             times = times,
             target = flow,
+            self_attn_mask = mask,
             cond_token_ids = cond_token_ids,
             cond_drop_prob = self.cond_drop_prob
         )
