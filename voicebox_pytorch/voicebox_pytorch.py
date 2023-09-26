@@ -2,6 +2,7 @@ import math
 import logging
 from random import random
 from functools import partial
+from pathlib import Path
 
 import torch
 from torch import nn, Tensor, einsum, IntTensor, FloatTensor, BoolTensor
@@ -933,6 +934,14 @@ class ConditionalFlowMatcherWrapper(Module):
     @property
     def device(self):
         return next(self.parameters()).device
+
+    def load(self, path, strict = True):
+        # return pkg so the trainer can access it
+        path = Path(path)
+        assert path.exists()
+        pkg = torch.load(str(path), map_location = 'cpu')
+        self.load_state_dict(pkg['model'], strict = strict)
+        return pkg
 
     @torch.inference_mode()
     def sample(
