@@ -376,6 +376,10 @@ class MelVoco(AudioEncoderDecoder):
         self.vocos = Vocos.from_pretrained(pretrained_vocos_path)
 
     @property
+    def downsample_factor(self):
+        raise NotImplementedError
+
+    @property
     def latent_dim(self):
         return self.num_mels
 
@@ -426,6 +430,10 @@ class EncodecVoco(AudioEncoderDecoder):
         self.vocos = Vocos.from_pretrained(pretrained_vocos_path)
 
         self.register_buffer('bandwidth_id', torch.tensor([bandwidth_id]))
+
+    @property
+    def downsample_factor(self):
+        return self.encodec.downsample_factor
 
     @property
     def latent_dim(self):
@@ -705,6 +713,7 @@ class VoiceBox(Module):
         if not condition_on_text:
             dim_cond_emb = 0
 
+        self.dim_cond_emb = dim_cond_emb
         self.condition_on_text = condition_on_text
         self.num_cond_tokens = num_cond_tokens
 
@@ -844,6 +853,11 @@ class VoiceBox(Module):
                 cond_emb = F.interpolate(cond_emb, (seq_len, 1), mode = 'bilinear')
                 cond_emb = rearrange(cond_emb, 'b d n 1 -> b n d')
 
+                if exists(self_attn_mask):
+                    self_attn_mask = rearrange(self_attn_mask.float(), 'b n -> b 1 n 1')
+                    self_attn_mask = F.interpolate(self_attn_mask, (seq_len, 1), mode = 'bilinear')
+                    self_attn_mask = rearrange(self_attn_mask, 'b 1 n 1 -> b n').bool()
+
         # concat source signal, semantic / phoneme conditioning embed, and conditioning
         # and project
 
@@ -947,7 +961,7 @@ class ConditionalFlowMatcherWrapper(Module):
     def sample(
         self,
         *,
-        cond,
+        cond = None,
         texts: Optional[List[str]] = None,
         text_token_ids: Optional[Tensor] = None,
         semantic_token_ids = None,
@@ -957,9 +971,6 @@ class ConditionalFlowMatcherWrapper(Module):
         cond_scale = 1.,
         decode_to_audio = True
     ):
-        shape = cond.shape
-        batch = shape[0]
-
         # take care of condition as raw audio
 
         cond_is_raw_audio = is_probably_audio_from_shape(cond)
@@ -997,18 +1008,34 @@ class ConditionalFlowMatcherWrapper(Module):
             else:
                 cond_token_ids = phoneme_ids
 
-            cond_length = cond.shape[-2]
             cond_tokens_seq_len = cond_token_ids.shape[-1]
+
+            # calculate the correct conditioning length
+            # based on the sampling freqs of wav2vec and audio-enc-dec, as well as downsample factor
+            # (cond_time x cond_sampling_freq / cond_downsample_factor) == (audio_time x audio_sampling_freq / audio_downsample_factor)
+
+            wav2vec = self.text_to_semantic.wav2vec
+            audio_enc_dec = self.voicebox.audio_enc_dec
+
+            cond_target_length = (cond_tokens_seq_len * wav2vec.target_sample_hz / wav2vec.downsample_factor) / (audio_enc_dec.sampling_rate / audio_enc_dec.downsample_factor)
+            cond_target_length = math.ceil(cond_target_length)
 
             # curtail or pad (todo: generalize this to any dimension and put in a function)
 
-            if cond_length > cond_tokens_seq_len:
-                cond = cond[:, :cond_tokens_seq_len, :]
-            elif cond_length < cond_tokens_seq_len:
-                cond = F.pad(cond, (0, 0, 0, cond_tokens_seq_len), value = 0.)
+            if exists(cond):
+                cond_length = cond.shape[-2]
 
+                if cond_length > cond_target_length:
+                    cond = cond[:, :cond_target_length, :]
+                elif cond_length < cond_target_length:
+                    cond = F.pad(cond, (0, 0, 0, cond_target_length), value = 0.)
+            else:
+                cond = torch.zeros((cond_token_ids.shape[0], cond_target_length, self.dim_cond_emb), device = self.device)
         else:
             assert num_cond_inputs == 0, 'no conditioning inputs should be given if not conditioning on text'
+
+        shape = cond.shape
+        batch = shape[0]
 
         # neural ode
 
