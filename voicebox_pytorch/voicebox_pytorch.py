@@ -81,6 +81,26 @@ def reduce_masks_with_and(*masks):
 
     return mask
 
+def interpolate_1d(t, length, mode = 'bilinear'):
+    " pytorch does not offer interpolation 1d, so hack by converting to 2d "
+
+    dtype = t.dtype
+    t = t.float()
+
+    implicit_one_channel = t.ndim == 2
+    if implicit_one_channel:
+        t = rearrange(t, 'b n -> b 1 n')
+
+    t = rearrange(t, 'b d n -> b d n 1')
+    t = F.interpolate(t, (length, 1), mode = mode)
+    t = rearrange(t, 'b d n 1 -> b d n')
+
+    if implicit_one_channel:
+        t = rearrange(t, 'b 1 n -> b n')
+
+    t = t.to(dtype)
+    return t
+
 # mask construction helpers
 
 def mask_from_start_end_indices(
@@ -849,14 +869,12 @@ class VoiceBox(Module):
 
             cond_emb_length = cond_emb.shape[-2]
             if cond_emb_length != seq_len:
-                cond_emb = rearrange(cond_emb, 'b n d -> b d n 1')
-                cond_emb = F.interpolate(cond_emb, (seq_len, 1), mode = 'bilinear')
-                cond_emb = rearrange(cond_emb, 'b d n 1 -> b n d')
+                cond_emb = rearrange(cond_emb, 'b n d -> b d n')
+                cond_emb = interpolate_1d(cond_emb, seq_len)
+                cond_emb = rearrange(cond_emb, 'b d n -> b n d')
 
                 if exists(self_attn_mask):
-                    self_attn_mask = rearrange(self_attn_mask.float(), 'b n -> b 1 n 1')
-                    self_attn_mask = F.interpolate(self_attn_mask, (seq_len, 1), mode = 'bilinear')
-                    self_attn_mask = rearrange(self_attn_mask, 'b 1 n 1 -> b n').bool()
+                    self_attn_mask = interpolate_1d(self_attn_mask, seq_len)
 
         # concat source signal, semantic / phoneme conditioning embed, and conditioning
         # and project
