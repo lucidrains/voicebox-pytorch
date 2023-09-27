@@ -20,6 +20,8 @@ The paper also addresses the issue with time embedding incorrectly subjected to 
 
 - <a href="https://github.com/chenht2010">@chenht2010</a> for finding a bug with rotary positions, and for validating that the code in the repository converges
 
+- <a href="https://github.com/lucasnewman">Lucas Newman</a> for (yet again) pull requesting all the training code for Spear-TTS conditioned Voicebox training!
+
 ## Install
 
 ```bash
