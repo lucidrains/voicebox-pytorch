@@ -22,6 +22,8 @@ The paper also addresses the issue with time embedding incorrectly subjected to 
 
 - <a href="https://github.com/lucasnewman">Lucas Newman</a> for (yet again) pull requesting all the training code for Spear-TTS conditioned Voicebox training!
 
+- <a href="https://github.com/lucasnewman">Lucas Newman</a> has demonstrated that the whole system works with Spear-TTS conditioning. Training converges even better than <a href="https://github.com/lucidrains/soundstorm-pytorch">Soundstorm</a>
+
 ## Install
 
 ```bash
