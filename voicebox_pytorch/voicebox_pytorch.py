@@ -987,7 +987,8 @@ class ConditionalFlowMatcherWrapper(Module):
         cond_mask = None,
         steps = 3,
         cond_scale = 1.,
-        decode_to_audio = True
+        decode_to_audio = True,
+        max_semantic_token_ids = 2048
     ):
         # take care of condition as raw audio
 
@@ -1018,7 +1019,7 @@ class ConditionalFlowMatcherWrapper(Module):
                         source = default(text_token_ids, texts),
                         source_type = 'text',
                         target_type = 'speech',
-                        max_length = 10,
+                        max_length = max_semantic_token_ids,
                         return_target_mask = True
                     )
 
