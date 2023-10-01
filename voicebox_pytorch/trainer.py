@@ -105,7 +105,7 @@ class VoiceBoxTrainer(nn.Module):
 
         self.lr = lr
         self.initial_lr = initial_lr
-        self.scheduler = CosineAnnealingLR(self.optim, T_max = num_train_steps)
+
 
         # max grad norm
 
@@ -135,7 +135,7 @@ class VoiceBoxTrainer(nn.Module):
             self.num_train_steps = len(dataset) // batch_size * num_epochs
         else:
             self.num_train_steps = num_train_steps
-        
+        self.scheduler = CosineAnnealingLR(self.optim, T_max=self.num_train_steps)
         self.num_warmup_steps = num_warmup_steps if exists(num_warmup_steps) else 0
         
         # dataloader
