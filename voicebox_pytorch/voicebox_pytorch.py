@@ -383,10 +383,12 @@ class Transformer(Module):
 
         # rotary embeddings
 
-        main_positions = torch.arange(seq_len, device = self.device, dtype = torch.long)
-        register_positions = torch.arange(self.num_register_tokens, device = self.device, dtype = torch.long)
-        register_positions -= 10000
-        positions = torch.cat((register_positions, main_positions))
+        positions = seq_len
+
+        if self.has_register_tokens:
+            main_positions = torch.arange(seq_len, device = self.device, dtype = torch.long)
+            register_positions = torch.full((self.num_register_tokens,), -10000, device = self.device, dtype = torch.long)
+            positions = torch.cat((register_positions, main_positions))
 
         rotary_emb = self.rotary_emb(positions)
 
