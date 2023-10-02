@@ -167,7 +167,7 @@ class LearnedSinusoidalPosEmb(Module):
 # https://arxiv.org/abs/2104.09864
 
 class RotaryEmbedding(Module):
-    def __init__(self, dim, theta = 10000):
+    def __init__(self, dim, theta = 50000):
         super().__init__()
         inv_freq = 1.0 / (theta ** (torch.arange(0, dim, 2).float() / dim))
         self.register_buffer("inv_freq", inv_freq)
@@ -176,8 +176,11 @@ class RotaryEmbedding(Module):
     def device(self):
         return self.inv_freq.device
 
-    def forward(self, seq_len):
-        t = torch.arange(seq_len, device = self.device).type_as(self.inv_freq)
+    def forward(self, t):
+        if not torch.is_tensor(t):
+            t = torch.arange(t, device = self.device)
+
+        t = t.type_as(self.inv_freq)
         freqs = torch.einsum('i , j -> i j', t, self.inv_freq)
         freqs = torch.cat((freqs, freqs), dim = -1)
         return freqs
@@ -310,7 +313,8 @@ class Transformer(Module):
         dim_head = 64,
         heads = 8,
         ff_mult = 4,
-        attn_dropout=0,
+        attn_dropout = 0,
+        num_register_tokens = 0.,
         attn_flash = False,
         adaptive_rmsnorm = False,
         adaptive_rmsnorm_cond_dim_in = None,
@@ -322,6 +326,9 @@ class Transformer(Module):
         self.layers = nn.ModuleList([])
 
         self.rotary_emb = RotaryEmbedding(dim = dim_head)
+
+        self.num_register_tokens = num_register_tokens
+        self.register_tokens = nn.Parameter(torch.randn(num_register_tokens, dim))
 
         if adaptive_rmsnorm:
             rmsnorm_klass = partial(AdaptiveRMSNorm, cond_dim = adaptive_rmsnorm_cond_dim_in)
@@ -344,19 +351,47 @@ class Transformer(Module):
 
         self.final_norm = RMSNorm(dim)
 
+    @property
+    def device(self):
+        return next(self.parameters()).device
+
     def forward(
         self,
         x,
         mask = None,
         adaptive_rmsnorm_cond = None
     ):
+        batch, seq_len, *_ = x.shape
+
+        register_tokens = repeat(self.register_tokens, 'n d -> b n d', b = batch)
+
+        # add register tokens to the left
+
+        x, ps = pack([register_tokens, x], 'b * d')
+
+        if exists(mask):
+            mask = F.pad(mask, (self.num_register_tokens, 0), value = True)
+
+        # keep track of skip connections
+
         skip_connects = []
 
-        rotary_emb = self.rotary_emb(x.shape[-2])
+        # rotary embeddings
+
+        main_positions = torch.arange(seq_len, device = self.device, dtype = torch.long)
+        register_positions = torch.arange(self.num_register_tokens, device = self.device, dtype = torch.long)
+        register_positions -= 10000
+        positions = torch.cat((register_positions, main_positions))
+
+        rotary_emb = self.rotary_emb(positions)
+
+        # adaptive rmsnorm
 
         rmsnorm_kwargs = dict()
         if exists(adaptive_rmsnorm_cond):
             rmsnorm_kwargs = dict(cond = adaptive_rmsnorm_cond)
+
+        # going through the attention layers
 
         for skip_combiner, attn_prenorm, attn, ff_prenorm, ff in self.layers:
 
@@ -375,6 +410,10 @@ class Transformer(Module):
 
             ff_input = ff_prenorm(x, **rmsnorm_kwargs) 
             x = ff(ff_input) + x
+
+        # remove the register tokens
+
+        _, x = unpack(x, ps, 'b * d')
 
         return self.final_norm(x)
 
@@ -783,6 +822,7 @@ class VoiceBox(Module):
         conv_pos_embed_groups = None,
         attn_dropout=0,
         attn_flash = False,
+        num_register_tokens = 16,
         p_drop_prob = 0.3, # p_drop in paper
         frac_lengths_mask: Tuple[float, float] = (0.7, 1.),
         condition_on_text = True
@@ -837,8 +877,9 @@ class VoiceBox(Module):
             dim_head = dim_head,
             heads = heads,
             ff_mult = ff_mult,
-            attn_dropout=attn_dropout,
+            attn_dropout= attn_dropout,
             attn_flash = attn_flash,
+            num_register_tokens = num_register_tokens,
             adaptive_rmsnorm = True,
             adaptive_rmsnorm_cond_dim_in = time_hidden_dim
         )

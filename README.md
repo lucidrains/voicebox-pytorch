@@ -203,3 +203,14 @@ sampled = cfm_wrapper.sample(cond = cond) # (2, 1024, 512)
     year    = {2023}
 }
 ```
+
+```bibtex
+@misc{darcet2023vision,
+    title   = {Vision Transformers Need Registers},
+    author  = {Timothée Darcet and Maxime Oquab and Julien Mairal and Piotr Bojanowski},
+    year    = {2023},
+    eprint  = {2309.16588},
+    archivePrefix = {arXiv},
+    primaryClass = {cs.CV}
+}
+```
