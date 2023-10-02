@@ -329,7 +329,10 @@ class Transformer(Module):
         self.rotary_emb = RotaryEmbedding(dim = dim_head)
 
         self.num_register_tokens = num_register_tokens
-        self.register_tokens = nn.Parameter(torch.randn(num_register_tokens, dim))
+        self.has_register_tokens = num_register_tokens > 0
+
+        if self.has_register_tokens:
+            self.register_tokens = nn.Parameter(torch.randn(num_register_tokens, dim))
 
         if adaptive_rmsnorm:
             rmsnorm_klass = partial(AdaptiveRMSNorm, cond_dim = adaptive_rmsnorm_cond_dim_in)
@@ -364,14 +367,15 @@ class Transformer(Module):
     ):
         batch, seq_len, *_ = x.shape
 
-        register_tokens = repeat(self.register_tokens, 'n d -> b n d', b = batch)
-
         # add register tokens to the left
 
-        x, ps = pack([register_tokens, x], 'b * d')
+        if self.has_register_tokens:
+            register_tokens = repeat(self.register_tokens, 'n d -> b n d', b = batch)
 
-        if exists(mask):
-            mask = F.pad(mask, (self.num_register_tokens, 0), value = True)
+            x, ps = pack([register_tokens, x], 'b * d')
+
+            if exists(mask):
+                mask = F.pad(mask, (self.num_register_tokens, 0), value = True)
 
         # keep track of skip connections
 
@@ -414,7 +418,8 @@ class Transformer(Module):
 
         # remove the register tokens
 
-        _, x = unpack(x, ps, 'b * d')
+        if self.has_register_tokens:
+            _, x = unpack(x, ps, 'b * d')
 
         return self.final_norm(x)
 
