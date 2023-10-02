@@ -13,7 +13,7 @@ import torchode as to
 from torchdiffeq import odeint
 
 from beartype import beartype
-from beartype.typing import Tuple, Optional, List
+from beartype.typing import Tuple, Optional, List, Union
 
 from einops.layers.torch import Rearrange
 from einops import rearrange, repeat, reduce, pack, unpack
@@ -176,7 +176,8 @@ class RotaryEmbedding(Module):
     def device(self):
         return self.inv_freq.device
 
-    def forward(self, t):
+    @beartype
+    def forward(self, t: Union[int, Tensor]):
         if not torch.is_tensor(t):
             t = torch.arange(t, device = self.device)
 
