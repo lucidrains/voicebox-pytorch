@@ -1080,7 +1080,8 @@ class ConditionalFlowMatcherWrapper(Module):
         self.text_to_semantic = text_to_semantic
         self.duration_predictor = duration_predictor
 
-        assert exists(text_to_semantic) ^ exists(duration_predictor), 'you should use either TextToSemantic from Spear-TTS, or DurationPredictor for the text / phoneme to audio alignment, but not both'
+        if self.condition_on_text:
+            assert exists(text_to_semantic) ^ exists(duration_predictor), 'you should use either TextToSemantic from Spear-TTS, or DurationPredictor for the text / phoneme to audio alignment, but not both'
 
         self.cond_drop_prob = cond_drop_prob
 
