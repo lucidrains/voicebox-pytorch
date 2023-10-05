@@ -896,17 +896,18 @@ class ConditionalFlowMatcherWrapper(Module):
             assert exists(self.voicebox.audio_enc_dec), 'audio_enc_dec must be set on VoiceBox to train directly on raw audio'
 
             audio_enc_dec_sampling_rate = self.voicebox.audio_enc_dec.sampling_rate
-            input_sampling_rate = default(input_sampling_rate, audio_enc_dec_sampling_rate)
+            #input_sampling_rate = audio_enc_dec_sampling_rate
 
             with torch.no_grad():
                 self.voicebox.audio_enc_dec.eval()
 
+                # we just assume correct sample rate cuz I made it okay in the input lol
                 if input_is_raw_audio:
-                    x1 = resample(x1, input_sampling_rate, audio_enc_dec_sampling_rate)
+                    #x1 = resample(x1, input_sampling_rate, audio_enc_dec_sampling_rate)
                     x1 = self.voicebox.audio_enc_dec.encode(x1)
 
                 if exists(cond) and cond_is_raw_audio:
-                    cond = resample(cond, input_sampling_rate, audio_enc_dec_sampling_rate)
+                    #cond = resample(cond, input_sampling_rate, audio_enc_dec_sampling_rate)
                     cond = self.voicebox.audio_enc_dec.encode(cond)
 
         # setup text conditioning, either coming from duration model (as phoneme ids)
