@@ -262,21 +262,40 @@ class AdaptiveRMSNorm(Module):
 
 # attention
 
+class MultiheadRMSNorm(Module):
+    def __init__(self, dim, heads):
+        super().__init__()
+        self.scale = dim ** 0.5
+        self.gamma = nn.Parameter(torch.ones(heads, 1, dim))
+
+    def forward(self, x):
+        return F.normalize(x, dim = -1) * self.gamma * self.scale
+
 class Attention(Module):
     def __init__(
         self,
         dim,
         dim_head = 64,
         heads = 8,
-        dropout=0,
-        flash = False
+        dropout = 0,
+        flash = False,
+        qk_norm = False,
+        qk_norm_scale = 10
     ):
         super().__init__()
         self.heads = heads
-        self.scale = dim_head ** -0.5
         dim_inner = dim_head * heads
 
-        self.attend = Attend(dropout, flash = flash)
+        scale = qk_norm_scale if qk_norm else None
+
+        self.attend = Attend(dropout, flash = flash, scale = scale)
+
+        self.qk_norm = qk_norm
+
+        if qk_norm:
+            self.q_norm = MultiheadRMSNorm(dim_head, heads = heads)
+            self.k_norm = MultiheadRMSNorm(dim_head, heads = heads)
+
         self.to_qkv = nn.Linear(dim, dim_inner * 3, bias = False)
         self.to_out = nn.Linear(dim_inner, dim, bias = False)
 
@@ -285,6 +304,10 @@ class Attention(Module):
 
         q, k, v = self.to_qkv(x).chunk(3, dim = -1)
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = h), (q, k, v))
+
+        if self.qk_norm:
+            q = self.q_norm(q)
+            k = self.k_norm(k)
 
         if exists(rotary_emb):
             q, k = map(lambda t: apply_rotary_pos_emb(rotary_emb, t), (q, k))
@@ -320,7 +343,8 @@ class Transformer(Module):
         adaptive_rmsnorm = False,
         adaptive_rmsnorm_cond_dim_in = None,
         use_unet_skip_connection = False,
-        skip_connect_scale = None
+        skip_connect_scale = None,
+        attn_qk_norm = False
     ):
         super().__init__()
         assert divisible_by(depth, 2)
@@ -348,7 +372,7 @@ class Transformer(Module):
             self.layers.append(nn.ModuleList([
                 nn.Linear(dim * 2, dim) if has_skip else None,
                 rmsnorm_klass(dim = dim),
-                Attention(dim=dim, dim_head=dim_head, heads=heads, dropout=attn_dropout, flash=attn_flash),
+                Attention(dim = dim, dim_head = dim_head, heads = heads, dropout = attn_dropout, flash = attn_flash, qk_norm = attn_qk_norm),
                 rmsnorm_klass(dim = dim),
                 FeedForward(dim = dim, mult = ff_mult)
             ]))
@@ -550,6 +574,7 @@ class DurationPredictor(Module):
         dim_head = 64,
         heads = 8,
         ff_mult = 4,
+        attn_qk_norm = True,
         conv_pos_embed_kernel_size = 31,
         conv_pos_embed_groups = None,
         attn_dropout=0,
@@ -603,7 +628,8 @@ class DurationPredictor(Module):
             heads = heads,
             ff_mult = ff_mult,
             attn_dropout=attn_dropout,
-            attn_flash = attn_flash
+            attn_flash = attn_flash,
+            attn_qk_norm = attn_qk_norm
         )
 
         self.to_pred = nn.Sequential(
@@ -828,8 +854,9 @@ class VoiceBox(Module):
         time_hidden_dim = None,
         conv_pos_embed_kernel_size = 31,
         conv_pos_embed_groups = None,
-        attn_dropout=0,
+        attn_dropout = 0,
         attn_flash = False,
+        attn_qk_norm = True,
         num_register_tokens = 16,
         p_drop_prob = 0.3, # p_drop in paper
         frac_lengths_mask: Tuple[float, float] = (0.7, 1.),
@@ -887,6 +914,7 @@ class VoiceBox(Module):
             ff_mult = ff_mult,
             attn_dropout= attn_dropout,
             attn_flash = attn_flash,
+            attn_qk_norm = attn_qk_norm,
             num_register_tokens = num_register_tokens,
             adaptive_rmsnorm = True,
             adaptive_rmsnorm_cond_dim_in = time_hidden_dim

@@ -83,7 +83,10 @@ class VoiceBoxTrainer(nn.Module):
     ):
         super().__init__()
 
+        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters = True)
+
         self.accelerator = Accelerator(
+            kwargs_handlers = [ddp_kwargs],
             split_batches = split_batches,
             **accelerate_kwargs
         )
@@ -271,6 +274,7 @@ class VoiceBoxTrainer(nn.Module):
 
         if not steps % self.log_every:
             self.print(f"{steps}: loss: {logs['loss']:0.3f}")
+
         self.accelerator.log({"train_loss": logs['loss']}, step=steps)
 
         # sample results every so often

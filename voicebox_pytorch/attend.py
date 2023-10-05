@@ -17,6 +17,9 @@ FlashAttentionConfig = namedtuple('FlashAttentionConfig', ['enable_flash', 'enab
 def exists(val):
     return val is not None
 
+def default(val, d):
+    return val if exists(val) else d
+
 def once(fn):
     called = False
     @wraps(fn)
@@ -36,11 +39,14 @@ class Attend(nn.Module):
     def __init__(
         self,
         dropout = 0.,
-        flash = False
+        flash = False,
+        scale = None
     ):
         super().__init__()
         self.dropout = dropout
         self.attn_dropout = nn.Dropout(dropout)
+
+        self.scale = scale
 
         self.flash = flash
         assert not (flash and version.parse(torch.__version__) < version.parse('2.0.0')), 'in order to use flash attention, you must be using pytorch 2.0 or above'
@@ -63,7 +69,12 @@ class Attend(nn.Module):
             self.cuda_config = FlashAttentionConfig(False, True, True)
 
     def flash_attn(self, q, k, v, mask = None):
-        _, heads, q_len, _, k_len, is_cuda, device = *q.shape, k.shape[-2], q.is_cuda, q.device
+        _, heads, q_len, dim_head, k_len, is_cuda, device = *q.shape, k.shape[-2], q.is_cuda, q.device
+
+        # if scale is given, divide by the default scale that sdpa uses
+
+        if exists(self.scale):
+            q = q * (self.scale / (dim_head ** -0.5))
 
         # Check if mask exists and expand to compatible shape
         # The mask is B L, so it would have to be expanded to B H N L
@@ -97,7 +108,7 @@ class Attend(nn.Module):
 
         q_len, k_len, device = q.shape[-2], k.shape[-2], q.device
 
-        scale = q.shape[-1] ** -0.5
+        scale = default(self.scale, q.shape[-1] ** -0.5)
 
         if exists(mask) and mask.ndim != 4:
             mask = rearrange(mask, 'b j -> b 1 1 j')
