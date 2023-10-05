@@ -1,6 +1,8 @@
 import math
+import logging
 from random import random
 from functools import partial
+from pathlib import Path
 
 import torch
 from torch import nn, Tensor, einsum, IntTensor, FloatTensor, BoolTensor
@@ -8,23 +10,29 @@ from torch.nn import Module
 import torch.nn.functional as F
 
 import torchode as to
-
 from torchdiffeq import odeint
 
 from beartype import beartype
-from beartype.typing import Tuple, Optional
+from beartype.typing import Tuple, Optional, List, Union
 
 from einops.layers.torch import Rearrange
 from einops import rearrange, repeat, reduce, pack, unpack
 
 from voicebox_pytorch.attend import Attend
 
+from naturalspeech2_pytorch.aligner import Aligner, ForwardSumLoss, BinLoss, maximum_path
+from naturalspeech2_pytorch.utils.tokenizer import Tokenizer
+from naturalspeech2_pytorch.naturalspeech2_pytorch import generate_mask_from_repeats
+
 from audiolm_pytorch import EncodecWrapper
+from spear_tts_pytorch import TextToSemantic
 
 import torchaudio.transforms as T
-from torchaudio.functional import DB_to_amplitude
+from torchaudio.functional import DB_to_amplitude, resample
 
 from vocos import Vocos
+
+LOGGER = logging.getLogger(__file__)
 
 # helper functions
 
@@ -61,6 +69,49 @@ def prob_mask_like(shape, prob, device):
         return torch.zeros(shape, device = device, dtype = torch.bool)
     else:
         return torch.zeros(shape, device = device).float().uniform_(0, 1) < prob
+
+def reduce_masks_with_and(*masks):
+    masks = [*filter(exists, masks)]
+
+    if len(masks) == 0:
+        return None
+
+    mask, *rest_masks = masks
+
+    for rest_mask in rest_masks:
+        mask = mask & rest_mask
+
+    return mask
+
+def interpolate_1d(t, length, mode = 'bilinear'):
+    " pytorch does not offer interpolation 1d, so hack by converting to 2d "
+
+    dtype = t.dtype
+    t = t.float()
+
+    implicit_one_channel = t.ndim == 2
+    if implicit_one_channel:
+        t = rearrange(t, 'b n -> b 1 n')
+
+    t = rearrange(t, 'b d n -> b d n 1')
+    t = F.interpolate(t, (length, 1), mode = mode)
+    t = rearrange(t, 'b d n 1 -> b d n')
+
+    if implicit_one_channel:
+        t = rearrange(t, 'b 1 n -> b n')
+
+    t = t.to(dtype)
+    return t
+
+def curtail_or_pad(t, target_length):
+    length = t.shape[-2]
+
+    if length > target_length:
+        t = t[..., :target_length, :]
+    elif length < target_length:
+        t = F.pad(t, (0, 0, 0, target_length - length), value = 0.)
+
+    return t
 
 # mask construction helpers
 
@@ -116,7 +167,7 @@ class LearnedSinusoidalPosEmb(Module):
 # https://arxiv.org/abs/2104.09864
 
 class RotaryEmbedding(Module):
-    def __init__(self, dim, theta = 10000):
+    def __init__(self, dim, theta = 50000):
         super().__init__()
         inv_freq = 1.0 / (theta ** (torch.arange(0, dim, 2).float() / dim))
         self.register_buffer("inv_freq", inv_freq)
@@ -125,8 +176,12 @@ class RotaryEmbedding(Module):
     def device(self):
         return self.inv_freq.device
 
-    def forward(self, seq_len):
-        t = torch.arange(seq_len, device = self.device).type_as(self.inv_freq)
+    @beartype
+    def forward(self, t: Union[int, Tensor]):
+        if not torch.is_tensor(t):
+            t = torch.arange(t, device = self.device)
+
+        t = t.type_as(self.inv_freq)
         freqs = torch.einsum('i , j -> i j', t, self.inv_freq)
         freqs = torch.cat((freqs, freqs), dim = -1)
         return freqs
@@ -213,6 +268,7 @@ class Attention(Module):
         dim,
         dim_head = 64,
         heads = 8,
+        dropout=0,
         flash = False
     ):
         super().__init__()
@@ -220,7 +276,7 @@ class Attention(Module):
         self.scale = dim_head ** -0.5
         dim_inner = dim_head * heads
 
-        self.attend = Attend(flash = flash)
+        self.attend = Attend(dropout, flash = flash)
         self.to_qkv = nn.Linear(dim, dim_inner * 3, bias = False)
         self.to_out = nn.Linear(dim_inner, dim, bias = False)
 
@@ -258,9 +314,13 @@ class Transformer(Module):
         dim_head = 64,
         heads = 8,
         ff_mult = 4,
+        attn_dropout = 0,
+        num_register_tokens = 0.,
         attn_flash = False,
         adaptive_rmsnorm = False,
-        adaptive_rmsnorm_cond_dim_in = None
+        adaptive_rmsnorm_cond_dim_in = None,
+        use_unet_skip_connection = False,
+        skip_connect_scale = None
     ):
         super().__init__()
         assert divisible_by(depth, 2)
@@ -268,37 +328,77 @@ class Transformer(Module):
 
         self.rotary_emb = RotaryEmbedding(dim = dim_head)
 
+        self.num_register_tokens = num_register_tokens
+        self.has_register_tokens = num_register_tokens > 0
+
+        if self.has_register_tokens:
+            self.register_tokens = nn.Parameter(torch.randn(num_register_tokens, dim))
+
         if adaptive_rmsnorm:
             rmsnorm_klass = partial(AdaptiveRMSNorm, cond_dim = adaptive_rmsnorm_cond_dim_in)
         else:
             rmsnorm_klass = RMSNorm
 
+        self.skip_connect_scale = default(skip_connect_scale, 2 ** -0.5)
+
         for ind in range(depth):
             layer = ind + 1
-            has_skip = layer > (depth // 2)
+            has_skip = use_unet_skip_connection and layer > (depth // 2)
 
             self.layers.append(nn.ModuleList([
                 nn.Linear(dim * 2, dim) if has_skip else None,
                 rmsnorm_klass(dim = dim),
-                Attention(dim = dim, dim_head = dim_head, heads = heads, flash = attn_flash),
+                Attention(dim=dim, dim_head=dim_head, heads=heads, dropout=attn_dropout, flash=attn_flash),
                 rmsnorm_klass(dim = dim),
                 FeedForward(dim = dim, mult = ff_mult)
             ]))
 
         self.final_norm = RMSNorm(dim)
 
+    @property
+    def device(self):
+        return next(self.parameters()).device
+
     def forward(
         self,
         x,
+        mask = None,
         adaptive_rmsnorm_cond = None
     ):
+        batch, seq_len, *_ = x.shape
+
+        # add register tokens to the left
+
+        if self.has_register_tokens:
+            register_tokens = repeat(self.register_tokens, 'n d -> b n d', b = batch)
+
+            x, ps = pack([register_tokens, x], 'b * d')
+
+            if exists(mask):
+                mask = F.pad(mask, (self.num_register_tokens, 0), value = True)
+
+        # keep track of skip connections
+
         skip_connects = []
 
-        rotary_emb = self.rotary_emb(x.shape[-2])
+        # rotary embeddings
+
+        positions = seq_len
+
+        if self.has_register_tokens:
+            main_positions = torch.arange(seq_len, device = self.device, dtype = torch.long)
+            register_positions = torch.full((self.num_register_tokens,), -10000, device = self.device, dtype = torch.long)
+            positions = torch.cat((register_positions, main_positions))
+
+        rotary_emb = self.rotary_emb(positions)
+
+        # adaptive rmsnorm
 
         rmsnorm_kwargs = dict()
         if exists(adaptive_rmsnorm_cond):
             rmsnorm_kwargs = dict(cond = adaptive_rmsnorm_cond)
+
+        # going through the attention layers
 
         for skip_combiner, attn_prenorm, attn, ff_prenorm, ff in self.layers:
 
@@ -308,14 +408,20 @@ class Transformer(Module):
             if not exists(skip_combiner):
                 skip_connects.append(x)
             else:
-                x = torch.cat((x, skip_connects.pop()), dim = -1)
+                skip_connect = skip_connects.pop() * self.skip_connect_scale
+                x = torch.cat((x, skip_connect), dim = -1)
                 x = skip_combiner(x)
 
             attn_input = attn_prenorm(x, **rmsnorm_kwargs)
-            x = attn(attn_input, rotary_emb = rotary_emb) + x
+            x = attn(attn_input, mask = mask, rotary_emb = rotary_emb) + x
 
             ff_input = ff_prenorm(x, **rmsnorm_kwargs) 
             x = ff(ff_input) + x
+
+        # remove the register tokens
+
+        if self.has_register_tokens:
+            _, x = unpack(x, ps, 'b * d')
 
         return self.final_norm(x)
 
@@ -347,6 +453,10 @@ class MelVoco(AudioEncoderDecoder):
         self.sampling_rate = sampling_rate
 
         self.vocos = Vocos.from_pretrained(pretrained_vocos_path)
+
+    @property
+    def downsample_factor(self):
+        raise NotImplementedError
 
     @property
     def latent_dim(self):
@@ -389,14 +499,20 @@ class EncodecVoco(AudioEncoderDecoder):
     def __init__(
         self,
         *,
+        sampling_rate = 24000,
         pretrained_vocos_path = 'charactr/vocos-encodec-24khz',
         bandwidth_id = 2
     ):
         super().__init__()
+        self.sampling_rate = sampling_rate
         self.encodec = EncodecWrapper()
         self.vocos = Vocos.from_pretrained(pretrained_vocos_path)
 
         self.register_buffer('bandwidth_id', torch.tensor([bandwidth_id]))
+
+    @property
+    def downsample_factor(self):
+        return self.encodec.downsample_factor
 
     @property
     def latent_dim(self):
@@ -434,9 +550,11 @@ class VoiceBox(Module):
         time_hidden_dim = None,
         conv_pos_embed_kernel_size = 31,
         conv_pos_embed_groups = None,
-        attn_flash = True,
+        attn_dropout=0,
+        attn_flash = False,
+        num_register_tokens = 16,
         p_drop_prob = 0.3, # p_drop in paper
-        frac_lengths_mask: Tuple[float, float] = (0.7, 1.)
+        frac_lengths_mask: Tuple[float, float] = (0.7, 1.),
     ):
         super().__init__()
         dim_in = default(dim_in, dim)
@@ -456,10 +574,12 @@ class VoiceBox(Module):
             nn.SiLU()
         )
 
+
         self.p_drop_prob = p_drop_prob
         self.frac_lengths_mask = frac_lengths_mask
 
         self.to_embed = nn.Linear(dim_in * 2, dim)
+
 
         self.null_cond = nn.Parameter(torch.zeros(dim_in))
 
@@ -475,7 +595,9 @@ class VoiceBox(Module):
             dim_head = dim_head,
             heads = heads,
             ff_mult = ff_mult,
+            attn_dropout= attn_dropout,
             attn_flash = attn_flash,
+            num_register_tokens = num_register_tokens,
             adaptive_rmsnorm = True,
             adaptive_rmsnorm_cond_dim_in = time_hidden_dim
         )
@@ -510,16 +632,24 @@ class VoiceBox(Module):
         *,
         cond,
         times,
+        target,
         cond_drop_prob = 0.1,
-        target = None,
-        mask = None,
+        self_attn_mask=None,
+        cond_mask = None
     ):
-        batch, seq_len, cond_dim = cond.shape
-        assert cond_dim == x.shape[-1]
-
         # project in, in case codebook dim is not equal to model dimensions
 
-        x, cond = map(self.proj_in, (x, cond))
+        x = self.proj_in(x)
+
+        if exists(cond):
+            cond = self.proj_in(cond)
+
+        cond = default(cond, x)
+
+        # shapes
+
+        batch, seq_len, cond_dim = cond.shape
+        assert cond_dim == x.shape[-1]
 
         # auto manage shape of times, for odeint times
 
@@ -529,16 +659,26 @@ class VoiceBox(Module):
         if times.ndim == 1 and times.shape[0] == 1:
             times = repeat(times, '1 -> b', b = cond.shape[0])
 
-        # construct mask if not given
-        #TODO: decide on default masking scheme
-        if not exists(mask):
-            if coin_flip():
-                frac_lengths = torch.zeros((batch,), device = self.device).float().uniform_(*self.frac_lengths_mask)
-                mask = mask_from_frac_lengths(seq_len, frac_lengths)
-            else:
-                mask = prob_mask_like((batch, seq_len), self.p_drop_prob, self.device)
 
-        cond = cond * rearrange(~mask, '... -> ... 1')
+        # construct conditioning mask if not given
+
+        if self.training:
+            if not exists(cond_mask):
+                if coin_flip():
+                    frac_lengths = torch.zeros((batch,), device = self.device).float().uniform_(*self.frac_lengths_mask)
+                    cond_mask = mask_from_frac_lengths(seq_len, frac_lengths)
+                else:
+                    cond_mask = prob_mask_like((batch, seq_len), self.p_drop_prob, self.device)
+        else:
+            if not exists(cond_mask):
+                cond_mask = torch.ones((batch, seq_len), device = cond.device, dtype = torch.bool)
+
+        cond_mask_with_pad_dim = rearrange(cond_mask, '... -> ... 1')
+
+        # as described in section 3.2
+
+        x = x * cond_mask_with_pad_dim
+        cond = cond * ~cond_mask_with_pad_dim
 
         # classifier free guidance
 
@@ -551,7 +691,9 @@ class VoiceBox(Module):
                 cond
             )
 
+
         embed = torch.cat((x, cond), dim = -1)
+
         x = self.to_embed(embed)
 
         x = self.conv_embed(x) + x
@@ -560,7 +702,11 @@ class VoiceBox(Module):
 
         # attend
 
-        x = self.transformer(x, adaptive_rmsnorm_cond = time_emb)
+        x = self.transformer(
+            x,
+            mask = self_attn_mask,
+            adaptive_rmsnorm_cond = time_emb
+        )
 
         x = self.to_pred(x)
 
@@ -569,18 +715,20 @@ class VoiceBox(Module):
         if not exists(target):
             return x
 
-        if not exists(mask):
+        loss_mask = reduce_masks_with_and(cond_mask, self_attn_mask)
+
+        if not exists(loss_mask):
             return F.mse_loss(x, target)
 
         loss = F.mse_loss(x, target, reduction = 'none')
 
         loss = reduce(loss, 'b n d -> b n', 'mean')
-        loss = loss.masked_fill(~mask, 0.)
+        loss = loss.masked_fill(~loss_mask, 0.)
 
         # masked mean
 
         num = reduce(loss, 'b n -> b', 'sum')
-        den = mask.sum(dim = -1).clamp(min = 1e-5)
+        den = loss_mask.sum(dim = -1).clamp(min = 1e-5)
         loss = num / den
 
         return loss.mean()
@@ -588,7 +736,7 @@ class VoiceBox(Module):
 # wrapper for the CNF
 
 def is_probably_audio_from_shape(t):
-    return t.ndim == 2 or (t.ndim == 3 and t.shape[1] == 1)
+    return exists(t) and (t.ndim == 2 or (t.ndim == 3 and t.shape[1] == 1))
 
 class ConditionalFlowMatcherWrapper(Module):
     @beartype
@@ -625,19 +773,24 @@ class ConditionalFlowMatcherWrapper(Module):
     def device(self):
         return next(self.parameters()).device
 
+    def load(self, path, strict = True):
+        # return pkg so the trainer can access it
+        path = Path(path)
+        assert path.exists()
+        pkg = torch.load(str(path), map_location = 'cpu')
+        self.load_state_dict(pkg['model'], strict = strict)
+        return pkg
+
     @torch.inference_mode()
     def sample(
         self,
         *,
         cond,
-        mask = None,
+        cond_mask = None,
         steps = 3,
-        cond_scale = 1.,
-        decode_to_audio = True
+        decode_to_audio = True,
+        self_attn_mask = None,
     ):
-        shape = cond.shape
-        batch = shape[0]
-
         # take care of condition as raw audio
 
         cond_is_raw_audio = is_probably_audio_from_shape(cond)
@@ -647,6 +800,14 @@ class ConditionalFlowMatcherWrapper(Module):
 
             self.voicebox.audio_enc_dec.eval()
             cond = self.voicebox.audio_enc_dec.encode(cond)
+
+        # setup text conditioning, either coming from duration model (as phoneme ids)
+        # for coming from text-to-semantic module from spear-tts paper, as (semantic ids)
+
+        shape = cond.shape
+        batch = shape[0]
+
+        # neural ode
 
         self.voicebox.eval()
 
@@ -658,7 +819,9 @@ class ConditionalFlowMatcherWrapper(Module):
                 x,
                 times = t,
                 cond = cond,
-                cond_scale = cond_scale
+                cond_scale = 1.0,
+                cond_mask = cond_mask,
+                self_attn_mask = self_attn_mask
             )
 
             if exists(packed_shape):
@@ -670,12 +833,12 @@ class ConditionalFlowMatcherWrapper(Module):
         t = torch.linspace(0, 1, steps, device = self.device)
 
         if not self.use_torchode:
-            print('sampling with torchdiffeq')
+            LOGGER.debug('sampling with torchdiffeq')
 
             trajectory = odeint(fn, y0, t, **self.odeint_kwargs)
             sampled = trajectory[-1]
         else:
-            print('sampling with torchode')
+            LOGGER.debug('sampling with torchode')
 
             t = repeat(t, 'n -> b n', b = batch)
             y0, packed_shape = pack_one(y0, 'b *')
@@ -713,7 +876,8 @@ class ConditionalFlowMatcherWrapper(Module):
         x1,
         *,
         cond,
-        mask = None
+        mask = None,
+        cond_mask = None,
     ):
         """
         following eq (5) (6) in https://arxiv.org/pdf/2306.15687.pdf
@@ -725,17 +889,29 @@ class ConditionalFlowMatcherWrapper(Module):
 
         input_is_raw_audio, cond_is_raw_audio = map(is_probably_audio_from_shape, (x1, cond))
 
+        if input_is_raw_audio:
+            raw_audio = x1
+
         if any([input_is_raw_audio, cond_is_raw_audio]):
             assert exists(self.voicebox.audio_enc_dec), 'audio_enc_dec must be set on VoiceBox to train directly on raw audio'
+
+            audio_enc_dec_sampling_rate = self.voicebox.audio_enc_dec.sampling_rate
+            input_sampling_rate = default(input_sampling_rate, audio_enc_dec_sampling_rate)
 
             with torch.no_grad():
                 self.voicebox.audio_enc_dec.eval()
 
                 if input_is_raw_audio:
+                    x1 = resample(x1, input_sampling_rate, audio_enc_dec_sampling_rate)
                     x1 = self.voicebox.audio_enc_dec.encode(x1)
 
-                if cond_is_raw_audio:
+                if exists(cond) and cond_is_raw_audio:
+                    cond = resample(cond, input_sampling_rate, audio_enc_dec_sampling_rate)
                     cond = self.voicebox.audio_enc_dec.encode(cond)
+
+        # setup text conditioning, either coming from duration model (as phoneme ids)
+        # or from text-to-semantic module, semantic ids encoded with wav2vec (hubert usually)
+        # main conditional flow logic is below
 
         # x0 is gaussian noise
 
@@ -759,9 +935,10 @@ class ConditionalFlowMatcherWrapper(Module):
         loss = self.voicebox(
             w,
             cond = cond,
-            mask = mask,
+            cond_mask = cond_mask,
             times = times,
             target = flow,
+            self_attn_mask = mask,
             cond_drop_prob = self.cond_drop_prob
         )
 
