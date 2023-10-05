@@ -149,14 +149,12 @@ class VoiceBoxTrainer(nn.Module):
             self.cfm_wrapper,
             self.optim,
             self.scheduler,
-            self.dl,
-            self.valid_dl
+            self.dl
         ) = self.accelerator.prepare(
             self.cfm_wrapper,
             self.optim,
             self.scheduler,
-            self.dl,
-            self.valid_dl
+            self.dl
         )
 
         # dataloader iterators
@@ -281,11 +279,13 @@ class VoiceBoxTrainer(nn.Module):
 
         if self.is_main and not (steps % self.save_results_every):
             wave, = next(self.valid_dl_iter)
-            
-            with torch.inference_mode():
-                self.cfm_wrapper.eval()
+            unwrapped_model = self.accelerator.unwrap_model(self.cfm_wrapper)
 
-                valid_loss = self.cfm_wrapper(wave)
+            with torch.inference_mode():
+                unwrapped_model.eval()
+
+                wave = wave.to(unwrapped_model.device)
+                valid_loss = unwrapped_model(wave)
 
                 self.print(f'{steps}: valid loss {valid_loss:0.3f}')
                 self.accelerator.log({"valid_loss": valid_loss}, step=steps)
