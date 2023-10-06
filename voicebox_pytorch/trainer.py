@@ -14,6 +14,7 @@ from voicebox_pytorch.data import get_dataloader
 from voicebox_pytorch.optimizer import get_optimizer
 
 from accelerate import Accelerator, DistributedType
+from accelerate.utils import DistributedDataParallelKwargs
 
 # helpers
 
