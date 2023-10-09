@@ -319,11 +319,18 @@ class Attention(Module):
 
 # feedforward
 
-def FeedForward(dim, mult = 4):
+class GEGLU(Module):
+    def forward(self, x):
+        x, gate = x.chunk(2, dim = -1)
+        return F.gelu(gate) * x
+
+def FeedForward(dim, mult = 4, dropout = 0.):
+    dim_inner = int(dim * mult * 2 / 3)
     return nn.Sequential(
-        nn.Linear(dim, dim * mult),
-        nn.GELU(),
-        nn.Linear(dim * mult, dim)
+        nn.Linear(dim, dim_inner * 2),
+        GEGLU(),
+        nn.Dropout(dropout),
+        nn.Linear(dim_inner, dim)
     )
 
 # transformer
@@ -337,7 +344,8 @@ class Transformer(Module):
         dim_head = 64,
         heads = 8,
         ff_mult = 4,
-        attn_dropout = 0,
+        attn_dropout = 0.,
+        ff_dropout = 0.,
         num_register_tokens = 0.,
         attn_flash = False,
         adaptive_rmsnorm = False,
@@ -374,7 +382,7 @@ class Transformer(Module):
                 rmsnorm_klass(dim = dim),
                 Attention(dim = dim, dim_head = dim_head, heads = heads, dropout = attn_dropout, flash = attn_flash, qk_norm = attn_qk_norm),
                 rmsnorm_klass(dim = dim),
-                FeedForward(dim = dim, mult = ff_mult)
+                FeedForward(dim = dim, mult = ff_mult, dropout = ff_dropout)
             ]))
 
         self.final_norm = RMSNorm(dim)
@@ -575,6 +583,7 @@ class DurationPredictor(Module):
         heads = 8,
         ff_mult = 4,
         attn_qk_norm = True,
+        ff_dropout = 0.,
         conv_pos_embed_kernel_size = 31,
         conv_pos_embed_groups = None,
         attn_dropout=0,
@@ -627,6 +636,7 @@ class DurationPredictor(Module):
             dim_head = dim_head,
             heads = heads,
             ff_mult = ff_mult,
+            ff_dropout = ff_dropout,
             attn_dropout=attn_dropout,
             attn_flash = attn_flash,
             attn_qk_norm = attn_qk_norm
@@ -851,6 +861,7 @@ class VoiceBox(Module):
         dim_head = 64,
         heads = 16,
         ff_mult = 4,
+        ff_dropout = 0.,
         time_hidden_dim = None,
         conv_pos_embed_kernel_size = 31,
         conv_pos_embed_groups = None,
@@ -912,6 +923,7 @@ class VoiceBox(Module):
             dim_head = dim_head,
             heads = heads,
             ff_mult = ff_mult,
+            ff_dropout = ff_dropout,
             attn_dropout= attn_dropout,
             attn_flash = attn_flash,
             attn_qk_norm = attn_qk_norm,
