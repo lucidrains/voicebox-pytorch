@@ -821,7 +821,8 @@ class ConditionalFlowMatcherWrapper(Module):
                 cond = cond,
                 cond_scale = 1.0,
                 cond_mask = cond_mask,
-                self_attn_mask = self_attn_mask
+                self_attn_mask = self_attn_mask,
+                target=None,
             )
 
             if exists(packed_shape):
