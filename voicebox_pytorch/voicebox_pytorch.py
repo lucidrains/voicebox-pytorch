@@ -325,6 +325,7 @@ class Transformer(Module):
         super().__init__()
         assert divisible_by(depth, 2)
         self.layers = nn.ModuleList([])
+        self.dim = dim
 
         self.rotary_emb = RotaryEmbedding(dim = dim_head)
 
@@ -633,6 +634,7 @@ class VoiceBox(Module):
         cond,
         times,
         target,
+        ft_cond = None,
         cond_drop_prob = 0.1,
         self_attn_mask=None,
         cond_mask = None
@@ -679,6 +681,10 @@ class VoiceBox(Module):
 
         x = x * cond_mask_with_pad_dim
         cond = cond * ~cond_mask_with_pad_dim
+
+        # add in optional extra cond
+        if ft_cond is not None:
+            cond = cond + ft_cond[:,:cond.shape[1],:] # just add :)
 
         # classifier free guidance
 
@@ -786,6 +792,7 @@ class ConditionalFlowMatcherWrapper(Module):
         self,
         *,
         cond,
+        ft_cond = None,
         cond_mask = None,
         steps = 3,
         decode_to_audio = True,
@@ -818,6 +825,7 @@ class ConditionalFlowMatcherWrapper(Module):
             out = self.voicebox.forward_with_cond_scale(
                 x,
                 times = t,
+                ft_cond = ft_cond,
                 cond = cond,
                 cond_scale = 1.0,
                 cond_mask = cond_mask,
@@ -877,6 +885,7 @@ class ConditionalFlowMatcherWrapper(Module):
         x1,
         *,
         cond,
+        ft_cond = None,
         mask = None,
         cond_mask = None,
     ):
@@ -937,6 +946,7 @@ class ConditionalFlowMatcherWrapper(Module):
         loss = self.voicebox(
             w,
             cond = cond,
+            ft_cond = ft_cond,
             cond_mask = cond_mask,
             times = times,
             target = flow,
