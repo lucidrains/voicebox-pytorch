@@ -27,6 +27,8 @@ from naturalspeech2_pytorch.naturalspeech2_pytorch import generate_mask_from_rep
 from audiolm_pytorch import EncodecWrapper
 from spear_tts_pytorch import TextToSemantic
 
+from gateloop_transformer import SimpleGateLoopLayer as GateLoop
+
 import torchaudio.transforms as T
 from torchaudio.functional import DB_to_amplitude, resample
 
@@ -352,7 +354,8 @@ class Transformer(Module):
         adaptive_rmsnorm_cond_dim_in = None,
         use_unet_skip_connection = False,
         skip_connect_scale = None,
-        attn_qk_norm = False
+        attn_qk_norm = False,
+        use_gateloop_layers = False
     ):
         super().__init__()
         assert divisible_by(depth, 2)
@@ -379,6 +382,7 @@ class Transformer(Module):
 
             self.layers.append(nn.ModuleList([
                 nn.Linear(dim * 2, dim) if has_skip else None,
+                GateLoop(dim = dim) if use_gateloop_layers else None,
                 rmsnorm_klass(dim = dim),
                 Attention(dim = dim, dim_head = dim_head, heads = heads, dropout = attn_dropout, flash = attn_flash, qk_norm = attn_qk_norm),
                 rmsnorm_klass(dim = dim),
@@ -432,7 +436,7 @@ class Transformer(Module):
 
         # going through the attention layers
 
-        for skip_combiner, attn_prenorm, attn, ff_prenorm, ff in self.layers:
+        for skip_combiner, maybe_gateloop, attn_prenorm, attn, ff_prenorm, ff in self.layers:
 
             # in the paper, they use a u-net like skip connection
             # unclear how much this helps, as no ablations or further numbers given besides a brief one-two sentence mention
@@ -443,6 +447,9 @@ class Transformer(Module):
                 skip_connect = skip_connects.pop() * self.skip_connect_scale
                 x = torch.cat((x, skip_connect), dim = -1)
                 x = skip_combiner(x)
+
+            if exists(maybe_gateloop):
+                x = maybe_gateloop(x) + x
 
             attn_input = attn_prenorm(x, **rmsnorm_kwargs)
             x = attn(attn_input, mask = mask, rotary_emb = rotary_emb) + x
@@ -582,12 +589,13 @@ class DurationPredictor(Module):
         dim_head = 64,
         heads = 8,
         ff_mult = 4,
-        attn_qk_norm = True,
         ff_dropout = 0.,
         conv_pos_embed_kernel_size = 31,
         conv_pos_embed_groups = None,
-        attn_dropout=0,
+        attn_dropout = 0,
         attn_flash = False,
+        attn_qk_norm = True,
+        use_gateloop_layers = False,
         p_drop_prob = 0.2, # p_drop in paper
         frac_lengths_mask: Tuple[float, float] = (0.1, 1.),
         aligner_kwargs: dict = dict(dim_in = 80, attn_channels = 80)
@@ -639,7 +647,8 @@ class DurationPredictor(Module):
             ff_dropout = ff_dropout,
             attn_dropout=attn_dropout,
             attn_flash = attn_flash,
-            attn_qk_norm = attn_qk_norm
+            attn_qk_norm = attn_qk_norm,
+            use_gateloop_layers = use_gateloop_layers
         )
 
         self.to_pred = nn.Sequential(
@@ -868,6 +877,7 @@ class VoiceBox(Module):
         attn_dropout = 0,
         attn_flash = False,
         attn_qk_norm = True,
+        use_gateloop_layers = False,
         num_register_tokens = 16,
         p_drop_prob = 0.3, # p_drop in paper
         frac_lengths_mask: Tuple[float, float] = (0.7, 1.),
@@ -929,7 +939,8 @@ class VoiceBox(Module):
             attn_qk_norm = attn_qk_norm,
             num_register_tokens = num_register_tokens,
             adaptive_rmsnorm = True,
-            adaptive_rmsnorm_cond_dim_in = time_hidden_dim
+            adaptive_rmsnorm_cond_dim_in = time_hidden_dim,
+            use_gateloop_layers = use_gateloop_layers
         )
 
         dim_out = audio_enc_dec.latent_dim if exists(audio_enc_dec) else dim_in
