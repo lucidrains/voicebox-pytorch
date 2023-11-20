@@ -355,7 +355,8 @@ class Transformer(Module):
         use_unet_skip_connection = False,
         skip_connect_scale = None,
         attn_qk_norm = False,
-        use_gateloop_layers = False
+        use_gateloop_layers = False,
+        gateloop_use_jax = False,
     ):
         super().__init__()
         assert divisible_by(depth, 2)
@@ -382,7 +383,7 @@ class Transformer(Module):
 
             self.layers.append(nn.ModuleList([
                 nn.Linear(dim * 2, dim) if has_skip else None,
-                GateLoop(dim = dim) if use_gateloop_layers else None,
+                GateLoop(dim = dim, use_jax_associative_scan = gateloop_use_jax) if use_gateloop_layers else None,
                 rmsnorm_klass(dim = dim),
                 Attention(dim = dim, dim_head = dim_head, heads = heads, dropout = attn_dropout, flash = attn_flash, qk_norm = attn_qk_norm),
                 rmsnorm_klass(dim = dim),
