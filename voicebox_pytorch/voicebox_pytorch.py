@@ -1023,6 +1023,8 @@ class VoiceBox(Module):
 
         # classifier free guidance
 
+        cond_ids = cond_token_ids
+
         if cond_drop_prob > 0.:
             cond_drop_mask = prob_mask_like(cond.shape[:1], cond_drop_prob, self.device)
 
@@ -1043,7 +1045,7 @@ class VoiceBox(Module):
         cond_emb = None
 
         if self.condition_on_text:
-            cond_emb = self.to_cond_emb(cond_token_ids)
+            cond_emb = self.to_cond_emb(cond_ids)
 
             cond_emb_length = cond_emb.shape[-2]
             if cond_emb_length != seq_len:
