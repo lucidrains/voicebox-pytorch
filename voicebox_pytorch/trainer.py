@@ -1,6 +1,8 @@
-from pathlib import Path
 import re
+from pathlib import Path
 from shutil import rmtree
+from functools import partial
+from contextlib import nullcontext
 
 from beartype import beartype
 
@@ -256,12 +258,16 @@ class VoiceBoxTrainer(nn.Module):
 
         # training step
 
-        for _ in range(self.grad_accum_every):
+        for grad_accum_step in range(self.grad_accum_every):
+            is_last = grad_accum_step == (self.grad_accum_every - 1)
+            context = partial(self.accelerator.no_sync, self.cfm_wrapper) if not is_last else nullcontext
+
             wave, = next(self.dl_iter)
 
-            loss = self.cfm_wrapper(wave)
+            with self.accelerator.autocast(), context():
+                loss = self.cfm_wrapper(wave)
 
-            self.accelerator.backward(loss / self.grad_accum_every)
+                self.accelerator.backward(loss / self.grad_accum_every)
 
             accum_log(logs, {'loss': loss.item() / self.grad_accum_every})
 
