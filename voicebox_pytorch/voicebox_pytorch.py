@@ -1123,7 +1123,6 @@ class ConditionalFlowMatcherWrapper(Module):
         sigma = 0.,
         ode_atol = 1e-5,
         ode_rtol = 1e-5,
-        ode_step_size = 0.0625,
         use_torchode = False,
         torchdiffeq_ode_method = 'midpoint',   # use midpoint for torchdiffeq, as in paper
         torchode_method_klass = to.Tsit5,      # use tsit5 for torchode, as torchode does not have midpoint (recommended by Bryan @b-chiang)
@@ -1152,8 +1151,7 @@ class ConditionalFlowMatcherWrapper(Module):
         self.odeint_kwargs = dict(
             atol = ode_atol,
             rtol = ode_rtol,
-            method = torchdiffeq_ode_method,
-            options = dict(step_size = ode_step_size)
+            method = torchdiffeq_ode_method
         )
 
     @property
