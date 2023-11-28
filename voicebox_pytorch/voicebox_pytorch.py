@@ -990,10 +990,10 @@ class VoiceBox(Module):
 
         x = self.proj_in(x)
 
+        cond = default(cond, target)
+
         if exists(cond):
             cond = self.proj_in(cond)
-
-        cond = default(cond, x)
 
         # shapes
 
@@ -1012,11 +1012,8 @@ class VoiceBox(Module):
 
         if self.training:
             if not exists(cond_mask):
-                if coin_flip():
-                    frac_lengths = torch.zeros((batch,), device = self.device).float().uniform_(*self.frac_lengths_mask)
-                    cond_mask = mask_from_frac_lengths(seq_len, frac_lengths)
-                else:
-                    cond_mask = prob_mask_like((batch, seq_len), self.p_drop_prob, self.device)
+                frac_lengths = torch.zeros((batch,), device = self.device).float().uniform_(*self.frac_lengths_mask)
+                cond_mask = mask_from_frac_lengths(seq_len, frac_lengths)
         else:
             if not exists(cond_mask):
                 cond_mask = torch.ones((batch, seq_len), device = cond.device, dtype = torch.bool)
@@ -1025,7 +1022,6 @@ class VoiceBox(Module):
 
         # as described in section 3.2
 
-        x = x * cond_mask_with_pad_dim
         cond = cond * ~cond_mask_with_pad_dim
 
         # classifier free guidance
