@@ -217,10 +217,20 @@ class ConvPositionEmbed(Module):
             nn.GELU()
         )
 
-    def forward(self, x):
+    def forward(self, x, mask = None):
+
+        if exists(mask):
+            mask = mask[..., None]
+            x = x.masked_fill(~mask, 0.)
+
         x = rearrange(x, 'b n c -> b c n')
         x = self.dw_conv1d(x)
-        return rearrange(x, 'b c n -> b n c')
+        out = rearrange(x, 'b c n -> b n c')
+
+        if exists(mask):
+            out = out.masked_fill(~mask, 0.)
+
+        return out
 
 # norms
 
@@ -813,7 +823,7 @@ class DurationPredictor(Module):
         embed = torch.cat((phoneme_emb, cond), dim = -1)
         x = self.to_embed(embed)
 
-        x = self.conv_embed(x) + x
+        x = self.conv_embed(x, mask = self_attn_mask) + x
 
         x = self.transformer(
             x,
@@ -1067,7 +1077,7 @@ class VoiceBox(Module):
 
         x = self.to_embed(embed)
 
-        x = self.conv_embed(x) + x
+        x = self.conv_embed(x, mask = self_attn_mask) + x
 
         time_emb = self.sinu_pos_emb(times)
 
