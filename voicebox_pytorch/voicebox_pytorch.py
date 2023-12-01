@@ -1146,7 +1146,7 @@ class ConditionalFlowMatcherWrapper(Module):
         self.text_to_semantic = text_to_semantic
         self.duration_predictor = duration_predictor
 
-        if self.condition_on_text:
+        if self.condition_on_text and (exists(text_to_semantic) or exists(duration_predictor)):
             assert exists(text_to_semantic) ^ exists(duration_predictor), 'you should use either TextToSemantic from Spear-TTS, or DurationPredictor for the text / phoneme to audio alignment, but not both'
 
         self.cond_drop_prob = cond_drop_prob
@@ -1241,6 +1241,7 @@ class ConditionalFlowMatcherWrapper(Module):
                 cond_token_ids = aligned_phoneme_ids
 
             cond_tokens_seq_len = cond_token_ids.shape[-1]
+            cond_target_length = cond_tokens_seq_len
 
             if exists(cond):
                 if exists(self.text_to_semantic):
@@ -1253,12 +1254,9 @@ class ConditionalFlowMatcherWrapper(Module):
                     cond_target_length = (cond_tokens_seq_len * wav2vec.target_sample_hz / wav2vec.downsample_factor) / (audio_enc_dec.sampling_rate / audio_enc_dec.downsample_factor)
                     cond_target_length = math.ceil(cond_target_length)
 
-                elif exists(self.duration_predictor):
-                    cond_target_length = cond_tokens_seq_len
-
                 cond = curtail_or_pad(cond, cond_target_length)
             else:
-                cond = torch.zeros((cond_token_ids.shape[0], cond_target_length, self.dim_cond_emb), device = self.device)
+                cond = torch.zeros((cond_token_ids.shape[0], cond_target_length, self.voicebox.audio_enc_dec.latent_dim), device = self.device)
         else:
             assert num_cond_inputs == 0, 'no conditioning inputs should be given if not conditioning on text'
 
