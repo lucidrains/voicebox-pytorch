@@ -982,7 +982,7 @@ class VoiceBox(Module):
             return logits
 
         null_logits = self.forward(*args, cond_drop_prob = 1., **kwargs)
-        return null_logits + (logits - null_logits) * cond_scale
+        return logits + (logits - null_logits) * cond_scale
 
     def forward(
         self,
