@@ -1,3 +1,4 @@
+#sudo su 
 <img src="./images/voicebox.png" width="400px"></img>
 
 ## Voicebox - Pytorch
