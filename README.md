@@ -8,6 +8,8 @@ In this work, we will use rotary embeddings. The authors seem unaware that ALiBi
 
 The paper also addresses the issue with time embedding incorrectly subjected to relative distances (they concat the time embedding along the frame dimension of the audio tokens). This repository will use adaptive normalization, as applied successfully in <a href="https://arxiv.org/abs/2211.07292">Paella</a>
 
+Update: Recommend you just use <a href="https://github.com/lucidrains/e2-tts-pytorch">E2 TTS</a> instead of this work
+
 ## Appreciation
 
 - <a href="https://translated.com"><img style="vertical-align: middle;" src="./images/translated.png" height="20px" alt="Translated"><img></a> for awarding me the <a href="https://imminent.translated.com/research-grants-ceremony-innovations-in-language-technology">Imminent Grant</a> to advance the state of open sourced text-to-speech solutions. This project was started and will be completed under this grant.
