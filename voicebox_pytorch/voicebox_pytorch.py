@@ -1263,6 +1263,17 @@ class ConditionalFlowMatcherWrapper(Module):
         shape = cond.shape
         batch = shape[0]
 
+        # During infilling, ``cond_mask`` marks the frames that should be
+        # generated.  The complementary frames are observed context and must
+        # stay unchanged throughout the flow integration.  Keep the mask on
+        # the same device as the latent sequence and fail early for an
+        # accidentally misaligned mask rather than silently broadcasting it.
+        context_mask = None
+        if exists(cond_mask):
+            cond_mask = cond_mask.to(device = cond.device, dtype = torch.bool)
+            assert cond_mask.shape == cond.shape[:2], 'cond_mask must have shape (batch, sequence length) matching cond'
+            context_mask = rearrange(~cond_mask, 'b n -> b n 1')
+
         # neural ode
 
         self.voicebox.eval()
@@ -1270,6 +1281,13 @@ class ConditionalFlowMatcherWrapper(Module):
         def fn(t, x, *, packed_shape = None):
             if exists(packed_shape):
                 x = unpack_one(x, packed_shape, 'b *')
+
+            # Project the solver state back onto the observed context before
+            # evaluating the vector field.  Its derivative is then zeroed on
+            # those frames, making the context an invariant of the ODE (and
+            # preventing numerical solver drift from changing the prompt).
+            if exists(context_mask):
+                x = torch.where(context_mask, cond, x)
 
             out = self.voicebox.forward_with_cond_scale(
                 x,
@@ -1281,12 +1299,19 @@ class ConditionalFlowMatcherWrapper(Module):
                 self_attn_mask = self_attn_mask
             )
 
+            if exists(context_mask):
+                out = out.masked_fill(context_mask, 0.)
+
             if exists(packed_shape):
                 out = rearrange(out, 'b ... -> b (...)')
 
             return out
 
         y0 = torch.randn_like(cond)
+        if exists(context_mask):
+            # Start observed frames at their exact conditioning values; only
+            # masked frames are drawn from the Gaussian base distribution.
+            y0 = torch.where(context_mask, cond, y0)
         t = torch.linspace(0, 1, steps, device = self.device)
 
         if not self.use_torchode:
